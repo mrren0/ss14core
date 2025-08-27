@@ -4,14 +4,14 @@ pipeline {
 
   parameters {
     string(name: 'BRANCH', defaultValue: 'master', description: 'Ветка деплоя')
-    string(name: 'REPO', defaultValue: 'https://github.com/Total-War/total-prototypes.git', description: 'Git repo (https или ssh)')
+    string(name: 'REPO', defaultValue: 'https://github.com/thunder-ss14/corporate-war.git', description: 'Git repo (https или ssh)')
     string(name: 'SERVER_IP', defaultValue: '5.83.140.23', description: 'IP сервера = ID SSH credentials')
     string(name: 'PORT', defaultValue: '1212', description: 'Порт сервера')
     // server_config.toml
-    string(name: 'SERVER_NAME', defaultValue: 'Total Space - economic war', description: 'Имя сервера')
-    string(name: 'SERVER_DESC', defaultValue: 'Экономическая война', description: 'Описание (можно пустое)')
+    string(name: 'SERVER_NAME', defaultValue: 'TRAIN TDM 3000 TICKETS NO RULES 24/7', description: 'Имя сервера')
+    string(name: 'SERVER_DESC', defaultValue: 'DEATH MATCH', description: 'Описание (можно пустое)')
     string(name: 'SERVER_DOMAIN', defaultValue: 'total-space.online', description: 'Домен (для server_url)')
-    string(name: 'TICKRATE', defaultValue: '30', description: '[net] tickrate')
+    string(name: 'TICKRATE', defaultValue: '60', description: '[net] tickrate')
     booleanParam(name: 'LOBBYENABLED', defaultValue: true, description: '[game] lobbyenabled')
     string(name: 'AUTH_MODE', defaultValue: '1', description: '[auth] mode')
     string(name: 'HUB_TAGS', defaultValue: 'totalspace,economy', description: '[hub] tags')
