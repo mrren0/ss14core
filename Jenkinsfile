@@ -1,22 +1,22 @@
 pipeline {
   agent any
 
-  options {
-    timestamps()
-    ansiColor('xterm')
-  }
+  options { timestamps(); ansiColor('xterm') }
 
   parameters {
     choice(name: 'ENV', choices: ['prod', 'dev'], description: 'Куда деплоим')
     string(name: 'BRANCH', defaultValue: 'master', description: 'Ветка: master→prod, dev→dev')
+
+    // новое
+    string(name: 'SERVER_IP', defaultValue: '5.83.140.23', description: 'IP сервера = ID SSH credentials')
+    string(name: 'PORT', defaultValue: '', description: 'Явный порт. Если пусто — берётся PROD/DEV порт по ENV')
   }
 
   environment {
-    REPO = 'https://github.com/Total-War/total-prototypes.git'
-    DEST_BASE = '/opt/totalspace'
+    REPO  = 'https://github.com/Total-War/total-prototypes.git'
+    // DEST_BASE удалён. Путь формируем из REPO/BRANCH
     PROD_PORT = '1212'
     DEV_PORT  = '1213'
-    SERVER_IP = '5.83.140.23'   // статично
     DOTNET_CLI_TELEMETRY_OPTOUT = '1'
     GIT_TERMINAL_PROMPT = '0'
   }
@@ -28,8 +28,6 @@ pipeline {
           sh '''#!/usr/bin/env bash
 set -euo pipefail
 rm -rf src
-
-# askpass: username = x-access-token, password = PAT
 cat > askpass.sh <<'EOS'
 #!/bin/sh
 case "$1" in
@@ -38,17 +36,8 @@ case "$1" in
 esac
 EOS
 chmod +x askpass.sh
-
-# Клонирование через HTTPS без подсветки токена в URL
-GIT_ASKPASS="$PWD/askpass.sh" GIT_ASKPASS_REQUIRE=force \
-  git clone --depth 1 -b "$BRANCH" "$REPO" src
-
-# Сабмодули: временно переписываем ssh→https для github
-GIT_ASKPASS="$PWD/askpass.sh" GIT_ASKPASS_REQUIRE=force \
-  git -C src -c url.https://github.com/.insteadof=git@github.com: \
-  submodule update --init --recursive
-
-# На всякий случай отмечаем как safe (иногда нужно в Jenkins)
+GIT_ASKPASS="$PWD/askpass.sh" GIT_ASKPASS_REQUIRE=force git clone --depth 1 -b "$BRANCH" "$REPO" src
+GIT_ASKPASS="$PWD/askpass.sh" GIT_ASKPASS_REQUIRE=force git -C src -c url.https://github.com/.insteadof=git@github.com: submodule update --init --recursive
 git -C src config --local safe.directory "$(pwd)/src" || true
 '''
         }
@@ -60,7 +49,8 @@ git -C src config --local safe.directory "$(pwd)/src" || true
         sh '''#!/usr/bin/env bash
 set -euo pipefail
 mkdir -p .dotnet
-curl -fsSL https://dot.net/v1/dotnet-install.sh -o dotnet-install.sh
+# устойчивее к сбоям CDN
+curl -fsSL --retry 8 --retry-all-errors --retry-delay 2 -o dotnet-install.sh https://dot.net/v1/dotnet-install.sh
 bash dotnet-install.sh --install-dir "$PWD/.dotnet" --channel 9.0
 export PATH="$PWD/.dotnet:$PATH"
 dotnet --info
@@ -86,40 +76,29 @@ dotnet run --project Content.Packaging server --hybrid-acz --platform linux-x64
 set -euo pipefail
 rm -rf artifact
 mkdir -p artifact
-
-# 1) Пробуем найти распакованный билд
 OUTDIR="$(find src/release -maxdepth 4 -type f -name Robust.Server -printf '%h\\n' -quit || true)"
 if [ -n "$OUTDIR" ]; then
-  echo "✔ Найден распакованный билд: $OUTDIR"
   rsync -a --delete --exclude=".git" "$OUTDIR"/ artifact/
 else
-  # 2) Иначе ищем ZIP и распаковываем
   ZIP_FILE="$(ls -1 src/release/SS14.Server*_linux-x64.zip src/release/SS14.Server*.zip 2>/dev/null | head -n1 || true)"
   if [ -z "$ZIP_FILE" ]; then
-    echo "❌ Не найден ни распакованный билд, ни ZIP в src/release/"
-    echo "Содержимое src/release:"
+    echo "❌ Нет сборки в src/release"
     ls -la src/release || true
     exit 1
   fi
-  echo "✔ Найден ZIP: $ZIP_FILE"
-
   if command -v unzip >/dev/null 2>&1; then
     unzip -o "$ZIP_FILE" -d artifact/
   else
     python3 - <<'PY'
 import sys, zipfile
 from pathlib import Path
-z = Path(sys.argv[1]); d = Path(sys.argv[2])
-d.mkdir(parents=True, exist_ok=True)
-with zipfile.ZipFile(z, 'r') as zf: zf.extractall(d)
-print("Extracted", z, "->", d)
+z=Path(sys.argv[1]); d=Path(sys.argv[2]); d.mkdir(parents=True, exist_ok=True)
+with zipfile.ZipFile(z,'r') as zf: zf.extractall(d)
 PY
     "$ZIP_FILE" "artifact/"
   fi
-
   [ -f artifact/Robust.Server ] && chmod +x artifact/Robust.Server || true
 fi
-
 tar -C artifact -czf "ss14-server-${ENV}.tar.gz" .
 '''
         archiveArtifacts artifacts: "ss14-server-${ENV}.tar.gz", fingerprint: true
@@ -128,16 +107,32 @@ tar -C artifact -czf "ss14-server-${ENV}.tar.gz" .
 
     stage('Deploy via SSH') {
       steps {
-        sshagent (credentials: ['5.83.140.23']) {
+        script {
+          // порт: явный > из ENV
+          env.CHOSEN_PORT = params.PORT?.trim() ? params.PORT.trim() : (params.ENV == 'prod' ? env.PROD_PORT : env.DEV_PORT)
+          env.ADVERTISE   = (params.ENV == 'prod') ? 'true' : 'false'
+        }
+
+        // ID кредов == SERVER_IP
+        sshagent (credentials: [params.SERVER_IP]) {
           sh '''#!/usr/bin/env bash
 set -euo pipefail
 
-DEST="${DEST_BASE}/${ENV}"
+# --- Разбор REPO: github.com/<owner>/<repo>(.git) ---
+repo_path="$(printf '%s' "${REPO}" \
+  | sed -E 's#(git@github.com:|https://github.com/)([^/]+/[^/.]+)(\\.git)?#\\2#')"
+owner="${repo_path%%/*}"
+repo="${repo_path##*/}"
+
+# --- Безопасное имя ветки для пути и имени юнита ---
+safe_branch="$(printf '%s' "${BRANCH}" | tr '/ ' '_' | tr -cd 'A-Za-z0-9._-')"
+
+DEST="/opt/${owner}/${repo}/${safe_branch}"
 PORT="${CHOSEN_PORT}"
 ADVERTISE="${ADVERTISE}"
 
-# 1) Подготовка директорий
-ssh -o StrictHostKeyChecking=no "root@${SERVER_IP}" "mkdir -p ${DEST_BASE}/prod ${DEST_BASE}/dev"
+# 1) Подготовка директории на сервере
+ssh -o StrictHostKeyChecking=no "root@${SERVER_IP}" "mkdir -p \"${DEST}\""
 
 # 2) Заливка бинарей (конфиг и data/ не трогаем)
 rsync -a --delete \
@@ -154,7 +149,7 @@ else
   ssh -o StrictHostKeyChecking=no "root@${SERVER_IP}" "iptables -I INPUT -p tcp --dport ${PORT} -j ACCEPT || true; iptables -I INPUT -p udp --dport ${PORT} -j ACCEPT || true"
 fi
 
-# 4) Локально собрать server_config.toml и отправить ТОЛЬКО если его нет
+# 4) Сформировать server_config.toml (если его нет)
 tmpdir="$(mktemp -d)"
 cat >"$tmpdir/server_config.toml" <<EOF
 [net]
@@ -181,10 +176,10 @@ if ! ssh -o StrictHostKeyChecking=no "root@${SERVER_IP}" "test -f ${DEST}/server
 fi
 
 # 5) systemd unit → сервер
-UNIT="ss14-${ENV}.service"
+UNIT="ss14-${safe_branch}.service"
 cat >"$tmpdir/${UNIT}" <<EOF
 [Unit]
-Description=SS14 ${ENV} server
+Description=SS14 ${safe_branch} server
 After=network-online.target
 Wants=network-online.target
 
@@ -204,6 +199,13 @@ EOF
 scp -o StrictHostKeyChecking=no "$tmpdir/${UNIT}" "root@${SERVER_IP}:/etc/systemd/system/${UNIT}"
 ssh -o StrictHostKeyChecking=no "root@${SERVER_IP}" "systemctl daemon-reload && systemctl enable ${UNIT} || true && systemctl restart ${UNIT} && systemctl status --no-pager ${UNIT} || true"
 '''
+        }
+      }
     }
+  }
+
+  post {
+    success { echo '✅ Deploy completed.' }
+    failure { echo '❌ Deploy failed.' }
   }
 }
