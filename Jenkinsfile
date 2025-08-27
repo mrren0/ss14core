@@ -1,6 +1,5 @@
 pipeline {
   agent any
-
   options { timestamps(); ansiColor('xterm') }
 
   parameters {
@@ -8,11 +7,10 @@ pipeline {
     string(name: 'REPO', defaultValue: 'https://github.com/Total-War/total-prototypes.git', description: 'Git repo (https или ssh)')
     string(name: 'SERVER_IP', defaultValue: '5.83.140.23', description: 'IP сервера = ID SSH credentials')
     string(name: 'PORT', defaultValue: '1212', description: 'Порт сервера')
-
-    // Конфигурация server_config.toml
+    // server_config.toml
     string(name: 'SERVER_NAME', defaultValue: 'Total Space - economic war', description: 'Имя сервера')
     string(name: 'SERVER_DESC', defaultValue: 'Экономическая война', description: 'Описание (можно пустое)')
-    string(name: 'SERVER_DOMAIN', defaultValue: 'total-space.online', description: 'Домен (для prod server_url)')
+    string(name: 'SERVER_DOMAIN', defaultValue: 'total-space.online', description: 'Домен (для server_url)')
     string(name: 'TICKRATE', defaultValue: '30', description: '[net] tickrate')
     booleanParam(name: 'LOBBYENABLED', defaultValue: true, description: '[game] lobbyenabled')
     string(name: 'AUTH_MODE', defaultValue: '1', description: '[auth] mode')
@@ -91,9 +89,10 @@ else
   unzip -o "$ZIP_FILE" -d artifact/
   [ -f artifact/Robust.Server ] && chmod +x artifact/Robust.Server || true
 fi
-tar -C artifact -czf "ss14-server-${ENV}.tar.gz" .
+# имя бандла = ветка
+tar -C artifact -czf "ss14-server-${BRANCH}.tar.gz" .
 '''
-        archiveArtifacts artifacts: "ss14-server-${ENV}.tar.gz", fingerprint: true
+        archiveArtifacts artifacts: "ss14-server-${BRANCH}.tar.gz", fingerprint: true
       }
     }
 
@@ -103,6 +102,7 @@ tar -C artifact -czf "ss14-server-${ENV}.tar.gz" .
           sh '''#!/usr/bin/env bash
 set -euo pipefail
 
+# /opt/<owner>/<repo>/<branch>
 repo_path="$(printf '%s' "${REPO}" | sed -E 's#(git@github.com:|https://github.com/)([^/]+/[^/.]+)(\\.git)?#\\2#')"
 owner="${repo_path%%/*}"
 repo="${repo_path##*/}"
@@ -113,12 +113,13 @@ PORT="${PORT}"
 
 ssh -o StrictHostKeyChecking=no "root@${SERVER_IP}" "mkdir -p \"${DEST}\""
 
+# бинарники без конфига
 rsync -a --delete \
   --exclude 'server_config.toml' \
   --exclude 'data/' \
   -e "ssh -o StrictHostKeyChecking=no" artifact/ "root@${SERVER_IP}:${DEST}/"
 
-# открыть порт
+# firewall: ufw / firewalld / iptables
 if ssh -o StrictHostKeyChecking=no "root@${SERVER_IP}" "command -v ufw >/dev/null 2>&1"; then
   ssh -o StrictHostKeyChecking=no "root@${SERVER_IP}" "ufw allow ${PORT}/tcp || true; ufw allow ${PORT}/udp || true"
 elif ssh -o StrictHostKeyChecking=no "root@${SERVER_IP}" "command -v firewall-cmd >/dev/null 2>&1"; then
@@ -127,6 +128,7 @@ else
   ssh -o StrictHostKeyChecking=no "root@${SERVER_IP}" "iptables -I INPUT -p tcp --dport ${PORT} -j ACCEPT || true; iptables -I INPUT -p udp --dport ${PORT} -j ACCEPT || true"
 fi
 
+# server_config.toml из параметров
 tmpdir="$(mktemp -d)"
 cat >"$tmpdir/server_config.toml" <<EOF
 [net]
@@ -134,7 +136,7 @@ tickrate = ${TICKRATE}
 port = ${PORT}
 
 [game]
-hostname = "${SERVER_NAME} (${ENV})"
+hostname = "${SERVER_NAME} (${BRANCH})"
 description = "${SERVER_DESC}"
 lobbyenabled = ${LOBBYENABLED}
 
@@ -145,14 +147,17 @@ mode = ${AUTH_MODE}
 advertise = true
 tags = "${HUB_TAGS}"
 EOF
-if [ "${ENV}" = "prod" ]; then
+# server_url если есть домен
+if [ -n "${SERVER_DOMAIN:-}" ]; then
   echo "server_url = \\"ss14://${SERVER_DOMAIN}:${PORT}\\"" >> "$tmpdir/server_config.toml"
 fi
 
+# не перезатираем ручной конфиг
 if ! ssh -o StrictHostKeyChecking=no "root@${SERVER_IP}" "test -f ${DEST}/server_config.toml"; then
   scp -o StrictHostKeyChecking=no "$tmpdir/server_config.toml" "root@${SERVER_IP}:${DEST}/server_config.toml"
 fi
 
+# systemd unit
 UNIT="ss14-${safe_branch}.service"
 cat >"$tmpdir/${UNIT}" <<EOF
 [Unit]
