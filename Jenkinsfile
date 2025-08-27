@@ -5,18 +5,22 @@ pipeline {
 
   parameters {
     choice(name: 'ENV', choices: ['prod', 'dev'], description: 'Куда деплоим')
-    string(name: 'BRANCH', defaultValue: 'master', description: 'Ветка: master→prod, dev→dev')
-
-    // новое
+    string(name: 'BRANCH', defaultValue: 'master', description: 'Ветка деплоя')
+    string(name: 'REPO', defaultValue: 'https://github.com/Total-War/total-prototypes.git', description: 'Git repo (https или ssh)')
     string(name: 'SERVER_IP', defaultValue: '5.83.140.23', description: 'IP сервера = ID SSH credentials')
-    string(name: 'PORT', defaultValue: '', description: 'Явный порт. Если пусто — берётся PROD/DEV порт по ENV')
+    string(name: 'PORT', defaultValue: '1212', description: 'Порт сервера')
+
+    // Конфигурация server_config.toml
+    string(name: 'SERVER_NAME', defaultValue: 'Total Space - economic war', description: 'Имя сервера')
+    string(name: 'SERVER_DESC', defaultValue: 'Экономическая война', description: 'Описание (можно пустое)')
+    string(name: 'SERVER_DOMAIN', defaultValue: 'total-space.online', description: 'Домен (для prod server_url)')
+    string(name: 'TICKRATE', defaultValue: '30', description: '[net] tickrate')
+    booleanParam(name: 'LOBBYENABLED', defaultValue: true, description: '[game] lobbyenabled')
+    string(name: 'AUTH_MODE', defaultValue: '1', description: '[auth] mode')
+    string(name: 'HUB_TAGS', defaultValue: 'totalspace,economy', description: '[hub] tags')
   }
 
   environment {
-    REPO  = 'https://github.com/Total-War/total-prototypes.git'
-    // DEST_BASE удалён. Путь формируем из REPO/BRANCH
-    PROD_PORT = '1212'
-    DEV_PORT  = '1213'
     DOTNET_CLI_TELEMETRY_OPTOUT = '1'
     GIT_TERMINAL_PROMPT = '0'
   }
@@ -49,7 +53,6 @@ git -C src config --local safe.directory "$(pwd)/src" || true
         sh '''#!/usr/bin/env bash
 set -euo pipefail
 mkdir -p .dotnet
-# устойчивее к сбоям CDN
 curl -fsSL --retry 8 --retry-all-errors --retry-delay 2 -o dotnet-install.sh https://dot.net/v1/dotnet-install.sh
 bash dotnet-install.sh --install-dir "$PWD/.dotnet" --channel 9.0
 export PATH="$PWD/.dotnet:$PATH"
@@ -86,17 +89,7 @@ else
     ls -la src/release || true
     exit 1
   fi
-  if command -v unzip >/dev/null 2>&1; then
-    unzip -o "$ZIP_FILE" -d artifact/
-  else
-    python3 - <<'PY'
-import sys, zipfile
-from pathlib import Path
-z=Path(sys.argv[1]); d=Path(sys.argv[2]); d.mkdir(parents=True, exist_ok=True)
-with zipfile.ZipFile(z,'r') as zf: zf.extractall(d)
-PY
-    "$ZIP_FILE" "artifact/"
-  fi
+  unzip -o "$ZIP_FILE" -d artifact/
   [ -f artifact/Robust.Server ] && chmod +x artifact/Robust.Server || true
 fi
 tar -C artifact -czf "ss14-server-${ENV}.tar.gz" .
@@ -107,40 +100,26 @@ tar -C artifact -czf "ss14-server-${ENV}.tar.gz" .
 
     stage('Deploy via SSH') {
       steps {
-        script {
-          // порт: явный > из ENV
-          env.CHOSEN_PORT = params.PORT?.trim() ? params.PORT.trim() : (params.ENV == 'prod' ? env.PROD_PORT : env.DEV_PORT)
-          env.ADVERTISE   = (params.ENV == 'prod') ? 'true' : 'false'
-        }
-
-        // ID кредов == SERVER_IP
         sshagent (credentials: [params.SERVER_IP]) {
           sh '''#!/usr/bin/env bash
 set -euo pipefail
 
-# --- Разбор REPO: github.com/<owner>/<repo>(.git) ---
-repo_path="$(printf '%s' "${REPO}" \
-  | sed -E 's#(git@github.com:|https://github.com/)([^/]+/[^/.]+)(\\.git)?#\\2#')"
+repo_path="$(printf '%s' "${REPO}" | sed -E 's#(git@github.com:|https://github.com/)([^/]+/[^/.]+)(\\.git)?#\\2#')"
 owner="${repo_path%%/*}"
 repo="${repo_path##*/}"
-
-# --- Безопасное имя ветки для пути и имени юнита ---
 safe_branch="$(printf '%s' "${BRANCH}" | tr '/ ' '_' | tr -cd 'A-Za-z0-9._-')"
 
 DEST="/opt/${owner}/${repo}/${safe_branch}"
-PORT="${CHOSEN_PORT}"
-ADVERTISE="${ADVERTISE}"
+PORT="${PORT}"
 
-# 1) Подготовка директории на сервере
 ssh -o StrictHostKeyChecking=no "root@${SERVER_IP}" "mkdir -p \"${DEST}\""
 
-# 2) Заливка бинарей (конфиг и data/ не трогаем)
 rsync -a --delete \
   --exclude 'server_config.toml' \
   --exclude 'data/' \
   -e "ssh -o StrictHostKeyChecking=no" artifact/ "root@${SERVER_IP}:${DEST}/"
 
-# 3) Открыть порт в фаерволе (ufw / firewalld / iptables)
+# открыть порт
 if ssh -o StrictHostKeyChecking=no "root@${SERVER_IP}" "command -v ufw >/dev/null 2>&1"; then
   ssh -o StrictHostKeyChecking=no "root@${SERVER_IP}" "ufw allow ${PORT}/tcp || true; ufw allow ${PORT}/udp || true"
 elif ssh -o StrictHostKeyChecking=no "root@${SERVER_IP}" "command -v firewall-cmd >/dev/null 2>&1"; then
@@ -149,33 +128,32 @@ else
   ssh -o StrictHostKeyChecking=no "root@${SERVER_IP}" "iptables -I INPUT -p tcp --dport ${PORT} -j ACCEPT || true; iptables -I INPUT -p udp --dport ${PORT} -j ACCEPT || true"
 fi
 
-# 4) Сформировать server_config.toml (если его нет)
 tmpdir="$(mktemp -d)"
 cat >"$tmpdir/server_config.toml" <<EOF
 [net]
-tickrate = 30
+tickrate = ${TICKRATE}
 port = ${PORT}
 
 [game]
-hostname = "Total Space - economic war (${ENV})"
-lobbyenabled = true
+hostname = "${SERVER_NAME} (${ENV})"
+description = "${SERVER_DESC}"
+lobbyenabled = ${LOBBYENABLED}
 
 [auth]
-mode = 1
+mode = ${AUTH_MODE}
 
 [hub]
-advertise = ${ADVERTISE}
-tags = "totalspace,${ENV},economy"
+advertise = true
+tags = "${HUB_TAGS}"
 EOF
 if [ "${ENV}" = "prod" ]; then
-  echo "server_url = \\"ss14://total-space.online:${PORT}\\"" >> "$tmpdir/server_config.toml"
+  echo "server_url = \\"ss14://${SERVER_DOMAIN}:${PORT}\\"" >> "$tmpdir/server_config.toml"
 fi
 
 if ! ssh -o StrictHostKeyChecking=no "root@${SERVER_IP}" "test -f ${DEST}/server_config.toml"; then
   scp -o StrictHostKeyChecking=no "$tmpdir/server_config.toml" "root@${SERVER_IP}:${DEST}/server_config.toml"
 fi
 
-# 5) systemd unit → сервер
 UNIT="ss14-${safe_branch}.service"
 cat >"$tmpdir/${UNIT}" <<EOF
 [Unit]
