@@ -4,7 +4,6 @@ pipeline {
   options { timestamps(); ansiColor('xterm') }
 
   parameters {
-    choice(name: 'ENV', choices: ['prod', 'dev'], description: 'Куда деплоим')
     string(name: 'BRANCH', defaultValue: 'master', description: 'Ветка деплоя')
     string(name: 'REPO', defaultValue: 'https://github.com/Total-War/total-prototypes.git', description: 'Git repo (https или ssh)')
     string(name: 'SERVER_IP', defaultValue: '5.83.140.23', description: 'IP сервера = ID SSH credentials')
