@@ -1,22 +1,32 @@
 pipeline {
   agent any
 
-  options {
-    timestamps()
-    ansiColor('xterm')
-  }
+  options { timestamps(); ansiColor('xterm') }
 
   parameters {
-    choice(name: 'ENV', choices: ['prod', 'dev'], description: 'Куда деплоим')
-    string(name: 'BRANCH', defaultValue: 'master', description: 'Ветка: master→prod, dev→dev')
+    // Обязательные для запуска
+    string(name: 'SERVER_IP', defaultValue: '5.83.140.23', description: 'IP сервера = ID SSH credentials')
+    string(name: 'PORT',      defaultValue: '1212',       description: 'Порт сервера')
+
+    // Рекомендованные по умолчанию
+    string(name: 'DEST_NAME',    defaultValue: 'prod',  description: 'Подкаталог деплоя: prod/dev/…')
+    string(name: 'BRANCH',       defaultValue: 'master', description: 'Ветка для билда')
+    string(name: 'REPO',         defaultValue: 'https://github.com/Total-War/total-prototypes.git', description: 'Git repo')
+    string(name: 'DOTNET_CHANNEL', defaultValue: '9.0', description: '.NET channel')
+    string(name: 'DEST_BASE',    defaultValue: '/opt/totalspace', description: 'База каталогов на сервере')
+
+    // server_config.toml
+    string(name: 'SERVER_NAME',   defaultValue: 'Total Space - economic war', description: 'hostname в конфиге')
+    string(name: 'SERVER_DOMAIN', defaultValue: 'total-space.online',          description: 'для server_url (если нужно)')
+    string(name: 'TICKRATE',      defaultValue: '30',  description: '[net] tickrate')
+    booleanParam(name: 'LOBBYENABLED', defaultValue: true, description: '[game] lobbyenabled')
+    string(name: 'AUTH_MODE',     defaultValue: '1',   description: '[auth] mode')
+    booleanParam(name: 'ADVERTISE', defaultValue: true, description: '[hub] advertise')
+    string(name: 'HUB_TAGS',      defaultValue: 'totalspace,${DEST_NAME},economy', description: '[hub] tags')
+    booleanParam(name: 'WRITE_CFG_IF_MISSING', defaultValue: true, description: 'Создавать server_config.toml если отсутствует')
   }
 
   environment {
-    REPO = 'https://github.com/Total-War/total-prototypes.git'
-    DEST_BASE = '/opt/totalspace'
-    PROD_PORT = '1212'
-    DEV_PORT  = '1213'
-    SERVER_IP = '5.83.140.23'   // статично
     DOTNET_CLI_TELEMETRY_OPTOUT = '1'
     GIT_TERMINAL_PROMPT = '0'
   }
@@ -28,8 +38,6 @@ pipeline {
           sh '''#!/usr/bin/env bash
 set -euo pipefail
 rm -rf src
-
-# askpass: username = x-access-token, password = PAT
 cat > askpass.sh <<'EOS'
 #!/bin/sh
 case "$1" in
@@ -38,17 +46,8 @@ case "$1" in
 esac
 EOS
 chmod +x askpass.sh
-
-# Клонирование через HTTPS без подсветки токена в URL
-GIT_ASKPASS="$PWD/askpass.sh" GIT_ASKPASS_REQUIRE=force \
-  git clone --depth 1 -b "$BRANCH" "$REPO" src
-
-# Сабмодули: временно переписываем ssh→https для github
-GIT_ASKPASS="$PWD/askpass.sh" GIT_ASKPASS_REQUIRE=force \
-  git -C src -c url.https://github.com/.insteadof=git@github.com: \
-  submodule update --init --recursive
-
-# На всякий случай отмечаем как safe (иногда нужно в Jenkins)
+GIT_ASKPASS="$PWD/askpass.sh" GIT_ASKPASS_REQUIRE=force git clone --depth 1 -b "$BRANCH" "$REPO" src
+GIT_ASKPASS="$PWD/askpass.sh" GIT_ASKPASS_REQUIRE=force git -C src -c url.https://github.com/.insteadof=git@github.com: submodule update --init --recursive
 git -C src config --local safe.directory "$(pwd)/src" || true
 '''
         }
@@ -61,7 +60,7 @@ git -C src config --local safe.directory "$(pwd)/src" || true
 set -euo pipefail
 mkdir -p .dotnet
 curl -fsSL https://dot.net/v1/dotnet-install.sh -o dotnet-install.sh
-bash dotnet-install.sh --install-dir "$PWD/.dotnet" --channel 9.0
+bash dotnet-install.sh --install-dir "$PWD/.dotnet" --channel "$DOTNET_CHANNEL"
 export PATH="$PWD/.dotnet:$PATH"
 dotnet --info
 '''
@@ -84,101 +83,73 @@ dotnet run --project Content.Packaging server --hybrid-acz --platform linux-x64
       steps {
         sh '''#!/usr/bin/env bash
 set -euo pipefail
-rm -rf artifact
-mkdir -p artifact
-
-# 1) Пробуем найти распакованный билд
+rm -rf artifact; mkdir -p artifact
 OUTDIR="$(find src/release -maxdepth 4 -type f -name Robust.Server -printf '%h\\n' -quit || true)"
 if [ -n "$OUTDIR" ]; then
-  echo "✔ Найден распакованный билд: $OUTDIR"
   rsync -a --delete --exclude=".git" "$OUTDIR"/ artifact/
 else
-  # 2) Иначе ищем ZIP и распаковываем
   ZIP_FILE="$(ls -1 src/release/SS14.Server*_linux-x64.zip src/release/SS14.Server*.zip 2>/dev/null | head -n1 || true)"
-  if [ -z "$ZIP_FILE" ]; then
-    echo "❌ Не найден ни распакованный билд, ни ZIP в src/release/"
-    echo "Содержимое src/release:"
-    ls -la src/release || true
-    exit 1
-  fi
-  echo "✔ Найден ZIP: $ZIP_FILE"
-
-  if command -v unzip >/dev/null 2>&1; then
-    unzip -o "$ZIP_FILE" -d artifact/
-  else
+  [ -z "$ZIP_FILE" ] && { echo "No build in src/release"; ls -la src/release || true; exit 1; }
+  if command -v unzip >/dev/null 2>&1; then unzip -o "$ZIP_FILE" -d artifact/; else
     python3 - <<'PY'
-import sys, zipfile
-from pathlib import Path
-z = Path(sys.argv[1]); d = Path(sys.argv[2])
-d.mkdir(parents=True, exist_ok=True)
-with zipfile.ZipFile(z, 'r') as zf: zf.extractall(d)
-print("Extracted", z, "->", d)
+import sys, zipfile; from pathlib import Path
+z=Path(sys.argv[1]); d=Path(sys.argv[2]); d.mkdir(parents=True, exist_ok=True)
+with zipfile.ZipFile(z,'r') as zf: zf.extractall(d)
 PY
     "$ZIP_FILE" "artifact/"
   fi
-
   [ -f artifact/Robust.Server ] && chmod +x artifact/Robust.Server || true
 fi
-
-tar -C artifact -czf "ss14-server-${ENV}.tar.gz" .
+tar -C artifact -czf "ss14-server-${DEST_NAME}.tar.gz" .
 '''
-        archiveArtifacts artifacts: "ss14-server-${ENV}.tar.gz", fingerprint: true
+        archiveArtifacts artifacts: "ss14-server-${DEST_NAME}.tar.gz", fingerprint: true
       }
     }
 
     stage('Deploy via SSH') {
       steps {
-        sshagent (credentials: ['5.83.140.23']) {
+        sshagent (credentials: [params.SERVER_IP]) { // ID кредов = сам IP
           sh '''#!/usr/bin/env bash
 set -euo pipefail
 
-DEST="${DEST_BASE}/${ENV}"
-if [ "$ENV" = "prod" ]; then
-  PORT="$PROD_PORT"; ADVERTISE=true
-else
-  PORT="$DEV_PORT"; ADVERTISE=false
-fi
+DEST="${DEST_BASE}/${DEST_NAME}"
+PORT="${PORT}"
 
-# 1) Подготовка на сервере
-ssh -o StrictHostKeyChecking=no "root@${SERVER_IP}" "mkdir -p ${DEST_BASE}/prod ${DEST_BASE}/dev"
+ssh -o StrictHostKeyChecking=no "root@${SERVER_IP}" "mkdir -p ${DEST}"
 
-# 2) Заливка бинарей (конфиг и data/ не трогаем)
-rsync -a --delete \
-  --exclude 'server_config.toml' \
-  --exclude 'data/' \
+# Бинарники без конфигов
+rsync -a --delete --exclude 'server_config.toml' --exclude 'data/' \
   -e "ssh -o StrictHostKeyChecking=no" artifact/ "root@${SERVER_IP}:${DEST}/"
 
-# 3) Локально собрать server_config.toml и отправить ТОЛЬКО если его нет
-tmpdir="$(mktemp -d)"
-cat >"$tmpdir/server_config.toml" <<EOF
+tmpdir="$(mktemp -d)"; cfg="$tmpdir/server_config.toml"
+cat >"$cfg" <<EOF
 [net]
-tickrate = 30
+tickrate = ${TICKRATE}
 port = ${PORT}
 
 [game]
-hostname = "Total Space - economic war (${ENV})"
-lobbyenabled = true
+hostname = "${SERVER_NAME} (${DEST_NAME})"
+lobbyenabled = ${LOBBYENABLED}
 
 [auth]
-mode = 1
+mode = ${AUTH_MODE}
 
 [hub]
 advertise = ${ADVERTISE}
-tags = "totalspace,${ENV},economy"
+tags = "${HUB_TAGS}"
+server_url = "ss14://${SERVER_DOMAIN}:${PORT}"
 EOF
-if [ "${ENV}" = "prod" ]; then
-  echo "server_url = \\"ss14://total-space.online:${PORT}\\"" >> "$tmpdir/server_config.toml"
+
+if ${WRITE_CFG_IF_MISSING}; then
+  if ! ssh -o StrictHostKeyChecking=no "root@${SERVER_IP}" "test -f ${DEST}/server_config.toml"; then
+    scp -o StrictHostKeyChecking=no "$cfg" "root@${SERVER_IP}:${DEST}/server_config.toml"
+  fi
 fi
 
-if ! ssh -o StrictHostKeyChecking=no "root@${SERVER_IP}" "test -f ${DEST}/server_config.toml"; then
-  scp -o StrictHostKeyChecking=no "$tmpdir/server_config.toml" "root@${SERVER_IP}:${DEST}/server_config.toml"
-fi
-
-# 4) systemd unit локально → сервер
-UNIT="ss14-${ENV}.service"
+UNIT="ss14-${DEST_NAME}.service"
 cat >"$tmpdir/${UNIT}" <<EOF
 [Unit]
-Description=SS14 ${ENV} server
+Description=SS14 ${DEST_NAME} server
 After=network-online.target
 Wants=network-online.target
 
