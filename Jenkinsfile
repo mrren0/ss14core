@@ -133,13 +133,10 @@ tar -C artifact -czf "ss14-server-${ENV}.tar.gz" .
 set -euo pipefail
 
 DEST="${DEST_BASE}/${ENV}"
-if [ "$ENV" = "prod" ]; then
-  PORT="$PROD_PORT"; ADVERTISE=true
-else
-  PORT="$DEV_PORT"; ADVERTISE=false
-fi
+PORT="${CHOSEN_PORT}"
+ADVERTISE="${ADVERTISE}"
 
-# 1) Подготовка на сервере
+# 1) Подготовка директорий
 ssh -o StrictHostKeyChecking=no "root@${SERVER_IP}" "mkdir -p ${DEST_BASE}/prod ${DEST_BASE}/dev"
 
 # 2) Заливка бинарей (конфиг и data/ не трогаем)
@@ -148,7 +145,16 @@ rsync -a --delete \
   --exclude 'data/' \
   -e "ssh -o StrictHostKeyChecking=no" artifact/ "root@${SERVER_IP}:${DEST}/"
 
-# 3) Локально собрать server_config.toml и отправить ТОЛЬКО если его нет
+# 3) Открыть порт в фаерволе (ufw / firewalld / iptables)
+if ssh -o StrictHostKeyChecking=no "root@${SERVER_IP}" "command -v ufw >/dev/null 2>&1"; then
+  ssh -o StrictHostKeyChecking=no "root@${SERVER_IP}" "ufw allow ${PORT}/tcp || true; ufw allow ${PORT}/udp || true"
+elif ssh -o StrictHostKeyChecking=no "root@${SERVER_IP}" "command -v firewall-cmd >/dev/null 2>&1"; then
+  ssh -o StrictHostKeyChecking=no "root@${SERVER_IP}" "firewall-cmd --permanent --add-port=${PORT}/tcp || true; firewall-cmd --permanent --add-port=${PORT}/udp || true; firewall-cmd --reload || true"
+else
+  ssh -o StrictHostKeyChecking=no "root@${SERVER_IP}" "iptables -I INPUT -p tcp --dport ${PORT} -j ACCEPT || true; iptables -I INPUT -p udp --dport ${PORT} -j ACCEPT || true"
+fi
+
+# 4) Локально собрать server_config.toml и отправить ТОЛЬКО если его нет
 tmpdir="$(mktemp -d)"
 cat >"$tmpdir/server_config.toml" <<EOF
 [net]
@@ -174,7 +180,7 @@ if ! ssh -o StrictHostKeyChecking=no "root@${SERVER_IP}" "test -f ${DEST}/server
   scp -o StrictHostKeyChecking=no "$tmpdir/server_config.toml" "root@${SERVER_IP}:${DEST}/server_config.toml"
 fi
 
-# 4) systemd unit локально → сервер
+# 5) systemd unit → сервер
 UNIT="ss14-${ENV}.service"
 cat >"$tmpdir/${UNIT}" <<EOF
 [Unit]
@@ -198,13 +204,6 @@ EOF
 scp -o StrictHostKeyChecking=no "$tmpdir/${UNIT}" "root@${SERVER_IP}:/etc/systemd/system/${UNIT}"
 ssh -o StrictHostKeyChecking=no "root@${SERVER_IP}" "systemctl daemon-reload && systemctl enable ${UNIT} || true && systemctl restart ${UNIT} && systemctl status --no-pager ${UNIT} || true"
 '''
-        }
-      }
     }
-  }
-
-  post {
-    success { echo '✅ Deploy completed.' }
-    failure { echo '❌ Deploy failed.' }
   }
 }
