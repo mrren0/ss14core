@@ -136,7 +136,7 @@ tickrate = ${TICKRATE}
 port = ${PORT}
 
 [game]
-hostname = "${SERVER_NAME} (${BRANCH})"
+hostname = "${SERVER_NAME}"
 description = "${SERVER_DESC}"
 lobbyenabled = ${LOBBYENABLED}
 
