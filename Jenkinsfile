@@ -9,13 +9,13 @@ pipeline {
     string(name: 'SSH_CREDENTIALS_ID', defaultValue: '162.19.232.192', description: 'ID SSH credentials в Jenkins')
     string(name: 'PORT', defaultValue: '1212', description: 'Порт сервера')
 
-    string(name: 'SERVER_NAME', defaultValue: 'TRAIN TDM 3000 TICKETS NO RULES 24/7', description: 'Имя сервера')
-    string(name: 'SERVER_DESC', defaultValue: 'DEATH MATCH', description: 'Описание (можно пустое)')
+    string(name: 'SERVER_NAME', defaultValue: '[18+]TRAIN TDM 3000 TICKETS NO RULES 24/7', description: 'Имя сервера')
+    string(name: 'SERVER_DESC', defaultValue: 'DEATH MATCH', description: 'Описание (game.desc)')
     string(name: 'SERVER_DOMAIN', defaultValue: 'thunderhub.online', description: 'Домен (для server_url)')
     string(name: 'TICKRATE', defaultValue: '60', description: '[net] tickrate')
     booleanParam(name: 'LOBBYENABLED', defaultValue: true, description: '[game] lobbyenabled')
     string(name: 'AUTH_MODE', defaultValue: '1', description: '[auth] mode')
-    string(name: 'HUB_TAGS', defaultValue: 'totalspace,economy', description: '[hub] tags')
+    string(name: 'HUB_TAGS', defaultValue: 'hardcore, economy', description: '[hub] tags')
 
     string(name: 'MAX_PLAYERS', defaultValue: '64', description: '[game] maxplayers')
     string(name: 'SOFT_MAX_PLAYERS', defaultValue: '64', description: '[game] soft_max_players (можно = MAX_PLAYERS)')
@@ -175,6 +175,7 @@ port = ${PORT}
 
 [game]
 hostname = "${SERVER_NAME_E}"
+desc = "${SERVER_DESC_E}"
 lobbyenabled = ${LOBBYENABLED}
 maxplayers = ${MAX_PLAYERS}
 soft_max_players = ${SOFT_MAX_PLAYERS}
@@ -185,7 +186,6 @@ mode = ${AUTH_MODE}
 [hub]
 advertise = true
 tags = "${HUB_TAGS_E}"
-hub_desc = "${SERVER_DESC_E}"
 EOF
 
 [ -n "${SERVER_DOMAIN:-}" ] && printf 'server_url = "ss14://%s:%s"\\n' "${SERVER_DOMAIN}" "${PORT}" >> "$cfg"
@@ -214,6 +214,7 @@ sqlite_dbpath = "preferences.db"
 EOF
 fi
 
+# загрузка конфига
 if [ "${FORCE_CONFIG}" = "true" ]; then
   scp $SSH_OPTS "$cfg" "${SSH_USER}@${SERVER_IP}:${DEST}/server_config.toml"
 else
@@ -222,8 +223,10 @@ else
   fi
 fi
 
-ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "sed -i '/^BasePort[[:space:]]*=.*/d' '${DEST}/server_config.toml'"
+# очистка устаревших ключей и BasePort
+ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "sed -i -E '/^BasePort[[:space:]]*=.*/d;/^(hub\\.)?desc[[:space:]]*=.*/d;/^server_desc[[:space:]]*=.*/d' '${DEST}/server_config.toml'"
 
+# systemd unit
 UNIT="ss14-${safe_branch}.service"
 unit_local="$tmpdir/${UNIT}"
 cat >"$unit_local" <<EOF
