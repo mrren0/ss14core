@@ -1,11 +1,6 @@
 pipeline {
   agent any
-  options {
-    timestamps()
-    ansiColor('xterm')
-    durabilityHint('PERFORMANCE_OPTIMIZED')
-    disableConcurrentBuilds()
-  }
+  options { timestamps(); ansiColor('xterm'); durabilityHint('PERFORMANCE_OPTIMIZED'); timeout(time: 90, unit: 'MINUTES') }
 
   parameters {
     string(name: 'BRANCH', defaultValue: 'master', description: 'Ветка деплоя')
@@ -38,7 +33,10 @@ pipeline {
   environment {
     DOTNET_CLI_TELEMETRY_OPTOUT = '1'
     GIT_TERMINAL_PROMPT = '0'
+    // --- антиклин MSBuild/SDK ---
     MSBUILDDISABLENODEREUSE = '1'
+    DOTNET_CLI_HOME = "${WORKSPACE}/.dotnet_home"
+    MSBUILDDEBUGPATH = "${WORKSPACE}/msbuild-logs"
   }
 
   stages {
@@ -68,41 +66,44 @@ git -C src config --local safe.directory "$(pwd)/src" || true
       steps {
         sh '''#!/usr/bin/env bash
 set -euo pipefail
-mkdir -p .dotnet .dotnet_home msbuild_debug
-export MSBUILDDEBUGPATH="$PWD/msbuild_debug"
+mkdir -p .dotnet "$DOTNET_CLI_HOME" "$MSBUILDDEBUGPATH"
 curl -fsSL --retry 8 --retry-all-errors --retry-delay 2 -o dotnet-install.sh https://dot.net/v1/dotnet-install.sh
 bash dotnet-install.sh --install-dir "$PWD/.dotnet" --channel 9.0
 export PATH="$PWD/.dotnet:$PATH"
-export DOTNET_CLI_HOME="$PWD/.dotnet_home"
 dotnet --info
+'''
+      }
+    }
+
+    stage('Restore (retry)') {
+      steps {
+        sh '''#!/usr/bin/env bash
+set -Eeuo pipefail
+export PATH="$PWD/.dotnet:$PATH"
+cd src
+# чистим кэши чтобы избежать странных падений воркеров
+dotnet nuget locals all --clear || true
+for i in 1 2 3; do
+  stdbuf -oL -eL dotnet restore --no-cache && s=0 && break || s=$?
+  echo "restore retry $i failed with $s"; sleep $((5*i))
+done
+[ "${s:-0}" -eq 0 ]
 '''
       }
     }
 
     stage('Build & Package') {
       steps {
-        retry(1) {
+        retry(2) {
           sh '''#!/usr/bin/env bash
 set -Eeuo pipefail
 export PATH="$PWD/.dotnet:$PATH"
-export DOTNET_CLI_HOME="$PWD/.dotnet_home"
-export MSBUILDDISABLENODEREUSE=1
-export MSBUILDDEBUGPATH="$PWD/msbuild_debug"
-
-# убираем залипшие воркеры после рестартов Jenkins
-pkill -f 'MSBuild.dll' || true
-pkill -f 'VBCSCompiler' || true
-
 cd src
 ( while true; do echo "[keepalive] $(date -Iseconds) build alive"; sleep 55; done ) & KA=$!
-trap 'kill $KA 2>/dev/null || true' EXIT
-
-dotnet clean Content.Packaging -c Release || true
-# без параллелизма и без shared compilation — стабильнее в CI
-dotnet build Content.Packaging -c Release -v minimal -m:1 \
-  /p:BuildInParallel=false /p:UseSharedCompilation=false
-
-dotnet run --project Content.Packaging server --hybrid-acz --platform linux-x64
+trap 'kill $KA 2>/dev/null || true; dotnet build-server shutdown || true' EXIT
+# выключаем параллельность, shared compilation и Roslyn-серверы — меньше шансов на MSB4166
+stdbuf -oL -eL dotnet build Content.Packaging --configuration Release -v minimal -m:1 -p:UseSharedCompilation=false
+stdbuf -oL -eL dotnet run --project Content.Packaging server --hybrid-acz --platform linux-x64
 '''
         }
       }
@@ -125,7 +126,7 @@ else
     exit 1
   fi
   unzip -o "$ZIP_FILE" -d artifact/
-  [ -f artifact/Robust.Server ] && chmod -v +x artifact/Robust.Server || true
+  [ -f artifact/Robust.Server ] && chmod +x artifact/Robust.Server || true
 fi
 tar -C artifact -czf "ss14-server-${BRANCH}.tar.gz" .
 '''
@@ -179,10 +180,9 @@ safe_branch="$(printf '%s' "${BRANCH}" | tr '/ ' '_' | tr -cd 'A-Za-z0-9._-')"
 DEST="/opt/${owner}/${repo}/${safe_branch}"
 UNIT="ss14-${safe_branch}.service"
 
-# каталоги/права
 ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "sudo mkdir -p '${DEST}/logs' && sudo chown -R ${SSH_USER}:${SSH_USER} '${DEST}'"
 
-# файрволл
+# firewall
 if ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "command -v ufw >/dev/null 2>&1"; then
   ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "sudo ufw allow ${PORT}/tcp || true; sudo ufw allow ${PORT}/udp || true"
 elif ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "command -v firewall-cmd >/dev/null 2>&1"; then
@@ -191,10 +191,10 @@ else
   ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "sudo iptables -I INPUT -p tcp --dport ${PORT} -j ACCEPT || true; sudo iptables -I INPUT -p udp --dport ${PORT} -j ACCEPT || true"
 fi
 
-# заливка бинарей
+# upload binaries
 rsync -a --delete --exclude 'server_config.toml' --exclude 'data/' -e "ssh $SSH_OPTS" artifact/ "${SSH_USER}@${SERVER_IP}:${DEST}/"
 
-# server_config.toml (без desc — добавим отдельно в секцию [game])
+# base config (without desc)
 tmpdir="$(mktemp -d)"; cfg="$tmpdir/server_config.toml"
 SERVER_NAME_E="$(esc "$SERVER_NAME")"; HUB_TAGS_E="$(esc "$HUB_TAGS")"
 
@@ -243,12 +243,11 @@ sqlite_dbpath = "preferences.db"
 EOF
 fi
 
-# загрузка конфига
 if [ "${FORCE_CONFIG}" = "true" ] || ! ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "test -f ${DEST}/server_config.toml"; then
   scp $SSH_OPTS "$cfg" "${SSH_USER}@${SERVER_IP}:${DEST}/server_config.toml"
 fi
 
-# ОПИСАНИЕ: чистим старые desc в [game] и добавляем нашу строку
+# inject [game].desc
 SERVER_DESC_E="$(esc "$SERVER_DESC")"
 ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" /bin/bash -lc '
   set -Eeuo pipefail
@@ -284,11 +283,11 @@ EOF
 scp $SSH_OPTS "$unit_local" "${SSH_USER}@${SERVER_IP}:/tmp/${UNIT}"
 ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "sudo mv /tmp/${UNIT} /etc/systemd/system/${UNIT} && sudo systemctl daemon-reload && sudo systemctl enable ${UNIT} || true && sudo systemctl restart ${UNIT}"
 
-# проверка порта и /info.desc
+# check
 ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" /bin/bash -lc '
   set -e
-  sleep 2
-  ss -lntup | grep -q ":'"${PORT}"'\\b" || { sudo journalctl -u '"${UNIT}"' -n 200 --no-pager; exit 1; }
+  for i in {1..10}; do ss -lntup | grep -q ":'"${PORT}"'\\b" && ok=1 && break || sleep 1; done
+  [ "${ok:-}" = "1" ] || { sudo journalctl -u '"${UNIT}"' -n 200 --no-pager; exit 1; }
   which jq >/dev/null 2>&1 || { sudo apt-get update -y && sudo apt-get install -y jq; }
   DESC_OUT="$(curl -s http://127.0.0.1:'"${PORT}"'/info | jq -r .desc || true)"
   echo "desc: ${DESC_OUT}"
@@ -302,7 +301,7 @@ ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" /bin/bash -lc '
 
   post {
     always {
-      archiveArtifacts artifacts: 'msbuild_debug/**', allowEmptyArchive: true
+      archiveArtifacts artifacts: 'msbuild-logs/**', allowEmptyArchive: true
     }
     success { echo '✅ Deploy completed.' }
     failure { echo '❌ Deploy failed.' }
