@@ -5,7 +5,13 @@ pipeline {
   parameters {
     string(name: 'BRANCH', defaultValue: 'master', description: 'Ветка деплоя')
     string(name: 'REPO', defaultValue: 'https://github.com/thunder-ss14/corporate-war.git', description: 'Git repo (https или ssh)')
-    string(name: 'SERVER_IP', defaultValue: '5.83.140.23', description: 'IP сервера = ID SSH credentials')
+    
+    // РАЗДЕЛЕНО: отдельный параметр для IP сервера
+    string(name: 'SERVER_IP', defaultValue: '5.83.140.23', description: 'IP адрес сервера')
+    
+    // РАЗДЕЛЕНО: отдельный параметр для ID SSH credentials
+    string(name: 'SSH_CREDENTIALS_ID', defaultValue: 'server-ssh-credentials', description: 'ID SSH credentials в Jenkins')
+    
     string(name: 'PORT', defaultValue: '1212', description: 'Порт сервера')
 
     // server_config.toml
@@ -112,7 +118,8 @@ tar -C artifact -czf "ss14-server-${BRANCH}.tar.gz" .
 
     stage('Deploy via SSH') {
       steps {
-        sshagent (credentials: [params.SERVER_IP]) {
+        // ИСПРАВЛЕНО: используем отдельный параметр для credentials
+        sshagent (credentials: [params.SSH_CREDENTIALS_ID]) {
           sh '''#!/usr/bin/env bash
 set -Eeuo pipefail
 SSH_OPTS="-o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=120"
