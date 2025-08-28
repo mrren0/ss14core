@@ -10,7 +10,7 @@ pipeline {
     string(name: 'PORT', defaultValue: '1212', description: 'Порт сервера')
 
     string(name: 'SERVER_NAME', defaultValue: '[18+]TRAIN TDM 3000 TICKETS NO RULES 24/7', description: 'Имя сервера')
-    string(name: 'SERVER_DESC', defaultValue: 'DEATH MATCH', description: 'Описание (game.desc)')
+    string(name: 'SERVER_DESC', defaultValue: 'DEATH MATCH', description: 'Описание (в /info)')
     string(name: 'SERVER_DOMAIN', defaultValue: 'thunderhub.online', description: 'Домен (для server_url)')
     string(name: 'TICKRATE', defaultValue: '60', description: '[net] tickrate')
     booleanParam(name: 'LOBBYENABLED', defaultValue: true, description: '[game] lobbyenabled')
@@ -18,14 +18,14 @@ pipeline {
     string(name: 'HUB_TAGS', defaultValue: 'hardcore, economy', description: '[hub] tags')
 
     string(name: 'MAX_PLAYERS', defaultValue: '64', description: '[game] maxplayers')
-    string(name: 'SOFT_MAX_PLAYERS', defaultValue: '64', description: '[game] soft_max_players (можно = MAX_PLAYERS)')
+    string(name: 'SOFT_MAX_PLAYERS', defaultValue: '64', description: '[game] soft_max_players')
 
     choice(name: 'DB_ENGINE', choices: ['sqlite','postgres'], description: '[database] engine')
     string(name: 'PG_HOST', defaultValue: 'localhost', description: 'Postgres host')
     string(name: 'PG_PORT', defaultValue: '5432', description: 'Postgres port')
     string(name: 'PG_DB',   defaultValue: 'ss14', description: 'Postgres database')
     string(name: 'PG_USER', defaultValue: '', description: 'Postgres user')
-    string(name: 'PG_PASS', defaultValue: '', description: 'Postgres password (или оставь пустым)')
+    string(name: 'PG_PASS', defaultValue: '', description: 'Postgres password (или пусто)')
 
     booleanParam(name: 'FORCE_CONFIG', defaultValue: true, description: 'Перезаписывать server_config.toml при деплое')
   }
@@ -112,9 +112,7 @@ tar -C artifact -czf "ss14-server-${BRANCH}.tar.gz" .
 
     stage('Ensure .NET 9 runtime on target') {
       steps {
-        withCredentials([sshUserPrivateKey(credentialsId: params.SSH_CREDENTIALS_ID,
-                                           keyFileVariable: 'SSH_KEY',
-                                           usernameVariable: 'SSH_USER')]) {
+        withCredentials([sshUserPrivateKey(credentialsId: params.SSH_CREDENTIALS_ID, keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
           sh '''#!/usr/bin/env bash
 set -Eeuo pipefail
 SSH_OPTS="-o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=120 -i \"$SSH_KEY\""
@@ -146,9 +144,7 @@ fi
 
     stage('Deploy via SSH') {
       steps {
-        withCredentials([sshUserPrivateKey(credentialsId: params.SSH_CREDENTIALS_ID,
-                                           keyFileVariable: 'SSH_KEY',
-                                           usernameVariable: 'SSH_USER')]) {
+        withCredentials([sshUserPrivateKey(credentialsId: params.SSH_CREDENTIALS_ID, keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
           sh '''#!/usr/bin/env bash
 set -Eeuo pipefail
 SSH_OPTS="-o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=120 -i \"$SSH_KEY\""
@@ -157,16 +153,27 @@ esc() { printf '%s' "$1" | sed -e 's/\\\\/\\\\\\\\/g' -e 's/"/\\\\\\"/g'; }
 repo_path="$(printf '%s' "${REPO}" | sed -E 's#(git@github.com:|https://github.com/)([^/]+/[^/.]+)(\\.git)?#\\2#')"
 owner="${repo_path%%/*}"; repo="${repo_path##*/}"
 safe_branch="$(printf '%s' "${BRANCH}" | tr '/ ' '_' | tr -cd 'A-Za-z0-9._-')"
-
 DEST="/opt/${owner}/${repo}/${safe_branch}"
+UNIT="ss14-${safe_branch}.service"
 
+# каталоги/права
 ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "sudo mkdir -p '${DEST}/logs' && sudo chown -R ${SSH_USER}:${SSH_USER} '${DEST}'"
 
+# файрволл
+if ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "command -v ufw >/dev/null 2>&1"; then
+  ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "sudo ufw allow ${PORT}/tcp || true; sudo ufw allow ${PORT}/udp || true"
+elif ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "command -v firewall-cmd >/dev/null 2>&1"; then
+  ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "sudo firewall-cmd --permanent --add-port=${PORT}/tcp || true; sudo firewall-cmd --permanent --add-port=${PORT}/udp || true; sudo firewall-cmd --reload || true"
+else
+  ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "sudo iptables -I INPUT -p tcp --dport ${PORT} -j ACCEPT || true; sudo iptables -I INPUT -p udp --dport ${PORT} -j ACCEPT || true"
+fi
+
+# заливка бинарей
 rsync -a --delete --exclude 'server_config.toml' --exclude 'data/' -e "ssh $SSH_OPTS" artifact/ "${SSH_USER}@${SERVER_IP}:${DEST}/"
 
-# server_config.toml
+# сформировать базовый server_config.toml (без desc!)
 tmpdir="$(mktemp -d)"; cfg="$tmpdir/server_config.toml"
-SERVER_NAME_E="$(esc "$SERVER_NAME")"; SERVER_DESC_E="$(esc "$SERVER_DESC")"; HUB_TAGS_E="$(esc "$HUB_TAGS")"
+SERVER_NAME_E="$(esc "$SERVER_NAME")"; HUB_TAGS_E="$(esc "$HUB_TAGS")"
 
 cat >"$cfg" <<EOF
 [net]
@@ -175,7 +182,6 @@ port = ${PORT}
 
 [game]
 hostname = "${SERVER_NAME_E}"
-desc = "${SERVER_DESC_E}"
 lobbyenabled = ${LOBBYENABLED}
 maxplayers = ${MAX_PLAYERS}
 soft_max_players = ${SOFT_MAX_PLAYERS}
@@ -214,20 +220,25 @@ sqlite_dbpath = "preferences.db"
 EOF
 fi
 
-# загрузка конфига
-if [ "${FORCE_CONFIG}" = "true" ]; then
+# загрузка конфига (идемпотентно)
+if [ "${FORCE_CONFIG}" = "true" ] || ! ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "test -f ${DEST}/server_config.toml"; then
   scp $SSH_OPTS "$cfg" "${SSH_USER}@${SERVER_IP}:${DEST}/server_config.toml"
-else
-  if ! ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "test -f ${DEST}/server_config.toml"; then
-    scp $SSH_OPTS "$cfg" "${SSH_USER}@${SERVER_IP}:${DEST}/server_config.toml"
-  fi
 fi
 
-# очистка устаревших ключей и BasePort
-ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "sed -i -E '/^BasePort[[:space:]]*=.*/d;/^(hub\\.)?desc[[:space:]]*=.*/d;/^server_desc[[:space:]]*=.*/d' '${DEST}/server_config.toml'"
+# правка ОПИСАНИЯ: чистим старые desc в [game] и добавляем нашу строку
+SERVER_DESC_E="$(esc "$SERVER_DESC")"
+ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" /bin/bash -lc '
+  set -Eeuo pipefail
+  CFG="'"${DEST}"'/server_config.toml"
+  # удалить desc/description только в секции [game]
+  sudo sed -i -E "/^\\[game\\]/,/^\\[/{/^[[:space:]]*(desc|description)[[:space:]]*=.*/d}" "$CFG"
+  # добавить нашу строку сразу после заголовка [game]
+  sudo sed -i -E "/^\\[game\\]$/a desc = \"'"${SERVER_DESC_E}"'\"" "$CFG"
+  # совместимость: удалить устаревший BasePort, если был
+  sudo sed -i -E "/^BasePort[[:space:]]*=.*/d" "$CFG"
+'
 
 # systemd unit
-UNIT="ss14-${safe_branch}.service"
 unit_local="$tmpdir/${UNIT}"
 cat >"$unit_local" <<EOF
 [Unit]
@@ -253,7 +264,16 @@ EOF
 scp $SSH_OPTS "$unit_local" "${SSH_USER}@${SERVER_IP}:/tmp/${UNIT}"
 ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "sudo mv /tmp/${UNIT} /etc/systemd/system/${UNIT} && sudo systemctl daemon-reload && sudo systemctl enable ${UNIT} || true && sudo systemctl restart ${UNIT}"
 
-ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "sleep 2; ss -lntup | grep -q ':${PORT}\\b' || { sudo journalctl -u ${UNIT} -n 200 --no-pager; exit 1; } && sudo systemctl status ${UNIT} --no-pager || true"
+# проверка порта и /info.desc
+ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" /bin/bash -lc '
+  set -e
+  sleep 2
+  ss -lntup | grep -q ":'"${PORT}"'\\b" || { sudo journalctl -u '"${UNIT}"' -n 200 --no-pager; exit 1; }
+  which jq >/dev/null 2>&1 || sudo apt-get update -y && sudo apt-get install -y jq
+  DESC_OUT="$(curl -s http://127.0.0.1:'"${PORT}"'/info | jq -r .desc || true)"
+  echo "desc: ${DESC_OUT}"
+  test "${DESC_OUT}" = "'"${SERVER_DESC_E}"'" || { echo "❌ desc не применился"; exit 1; }
+'
 '''
         }
       }
