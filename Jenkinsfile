@@ -243,23 +243,32 @@ if [ "${FORCE_CONFIG}" = "true" ] || ! ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" 
   scp $SSH_OPTS "$cfg" "${SSH_USER}@${SERVER_IP}:${DEST}/server_config.toml"
 fi
 
-# --- SAFE ВСТАВКА desc ВНУТРИ [game] (heredoc) ---
+# === ВСТАВКА desc БЕЗ sed-ловушек ===
 SERVER_DESC_E="$(esc "$SERVER_DESC")"
-ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "DEST='${DEST}' SERVER_DESC_E='${SERVER_DESC_E}' bash -se" <<'EOS'
+
+# готовим локально маленький патчер и заливаем на хост
+patch_local="$tmpdir/patch-desc.sh"
+cat >"$patch_local" <<'PATCH'
+#!/usr/bin/env bash
 set -Eeuo pipefail
-CFG="${DEST}/server_config.toml"
-DESC_VAL="$SERVER_DESC_E"
-
-# Удаляем любые desc/description только внутри [game]…следующей секции
-sudo sed -i -E '/^\[game\]/,/^\[/{/^[[:space:]]*(desc|description)[[:space:]]*=.*/d}' "$CFG"
-
-# Вставляем нашу строку сразу после заголовка [game]
-printf 'desc = "%s"\n' "$DESC_VAL" | sudo sed -i -e '/^\[game\]$/r /dev/stdin' "$CFG"
-
+CFG="$1"
+DESC_VAL="$2"
+# Удалить desc/description ТОЛЬКО внутри [game], затем добавить нашу строку
+awk -v d="$DESC_VAL" '
+  BEGIN{ing=0; wrote=0}
+  /^\[game\]$/ { print; ing=1; next }
+  /^\[/ && ing { if(!wrote){ print "desc = \"" d "\"" } ; ing=0; wrote=1 }
+  { if(ing && $0 ~ /^[[:space:]]*(desc|description)[[:space:]]*=/) next; print }
+  END{ if(ing && !wrote) print "desc = \"" d "\"" }
+' "$CFG" > "$CFG.tmp"
+mv "$CFG.tmp" "$CFG"
 # Чистим устаревший BasePort
-sudo sed -i -E '/^BasePort[[:space:]]*=.*/d' "$CFG"
-EOS
-# --- /SAFE ВСТАВКА ---
+sed -i -E '/^BasePort[[:space:]]*=.*/d' "$CFG"
+PATCH
+
+scp $SSH_OPTS "$patch_local" "${SSH_USER}@${SERVER_IP}:/tmp/patch-desc.sh"
+ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "sudo bash /tmp/patch-desc.sh '${DEST}/server_config.toml' '$(printf %s "$SERVER_DESC_E")'"
+# === /ВСТАВКА desc ===
 
 # systemd unit
 unit_local="$tmpdir/${UNIT}"
