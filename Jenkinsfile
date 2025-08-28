@@ -78,9 +78,10 @@ set -Eeuo pipefail
 export PATH="$PWD/.dotnet:$PATH"
 cd src
 
-# keepalive, чтобы Jenkins не терял heartbeat
+# keepalive для Jenkins
 ( while true; do echo "[keepalive] $(date -Iseconds) build alive"; sleep 55; done ) & KA=$!
-trap 'kill $KA 2>/dev/null || true' EXIT
+cleanup(){ kill $KA 2>/dev/null || true; }
+trap cleanup EXIT
 
 stdbuf -oL -eL dotnet build Content.Packaging --configuration Release -v minimal
 stdbuf -oL -eL dotnet run --project Content.Packaging server --hybrid-acz --platform linux-x64
@@ -119,6 +120,8 @@ tar -C artifact -czf "ss14-server-${BRANCH}.tar.gz" .
           sh '''#!/usr/bin/env bash
 set -Eeuo pipefail
 
+SSH_OPTS="-o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=120"
+
 # esc для TOML строк
 esc() { printf '%s' "$1" | sed -e 's/\\\\/\\\\\\\\/g' -e 's/"/\\\\\\"/g'; }
 
@@ -130,21 +133,21 @@ safe_branch="$(printf '%s' "${BRANCH}" | tr '/ ' '_' | tr -cd 'A-Za-z0-9._-')"
 DEST="/opt/${owner}/${repo}/${safe_branch}"
 PORT="${PORT}"
 
-ssh -o StrictHostKeyChecking=no "root@${SERVER_IP}" "mkdir -p \"${DEST}\""
+ssh $SSH_OPTS "root@${SERVER_IP}" "mkdir -p \"${DEST}\""
 
 # бинарники
 rsync -a --delete \
   --exclude 'server_config.toml' \
   --exclude 'data/' \
-  -e "ssh -o StrictHostKeyChecking=no" artifact/ "root@${SERVER_IP}:${DEST}/"
+  -e "ssh $SSH_OPTS" artifact/ "root@${SERVER_IP}:${DEST}/"
 
 # firewall
-if ssh -o StrictHostKeyChecking=no "root@${SERVER_IP}" "command -v ufw >/dev/null 2>&1"; then
-  ssh -o StrictHostKeyChecking=no "root@${SERVER_IP}" "ufw allow ${PORT}/tcp || true; ufw allow ${PORT}/udp || true"
-elif ssh -o StrictHostKeyChecking=no "root@${SERVER_IP}" "command -v firewall-cmd >/dev/null 2>&1"; then
-  ssh -o StrictHostKeyChecking=no "root@${SERVER_IP}" "firewall-cmd --permanent --add-port=${PORT}/tcp || true; firewall-cmd --permanent --add-port=${PORT}/udp || true; firewall-cmd --reload || true"
+if ssh $SSH_OPTS "root@${SERVER_IP}" "command -v ufw >/dev/null 2>&1"; then
+  ssh $SSH_OPTS "root@${SERVER_IP}" "ufw allow ${PORT}/tcp || true; ufw allow ${PORT}/udp || true"
+elif ssh $SSH_OPTS "root@${SERVER_IP}" "command -v firewall-cmd >/dev/null 2>&1"; then
+  ssh $SSH_OPTS "root@${SERVER_IP}" "firewall-cmd --permanent --add-port=${PORT}/tcp || true; firewall-cmd --permanent --add-port=${PORT}/udp || true; firewall-cmd --reload || true"
 else
-  ssh -o StrictHostKeyChecking=no "root@${SERVER_IP}" "iptables -I INPUT -p tcp --dport ${PORT} -j ACCEPT || true; iptables -I INPUT -p udp --dport ${PORT} -j ACCEPT || true"
+  ssh $SSH_OPTS "root@${SERVER_IP}" "iptables -I INPUT -p tcp --dport ${PORT} -j ACCEPT || true; iptables -I INPUT -p udp --dport ${PORT} -j ACCEPT || true"
 fi
 
 # server_config.toml (строго один движок БД)
@@ -213,10 +216,10 @@ fi
 
 # политика перезаписи
 if ${FORCE_CONFIG}; then
-  scp -o StrictHostKeyChecking=no "$cfg" "root@${SERVER_IP}:${DEST}/server_config.toml"
+  scp $SSH_OPTS "$cfg" "root@${SERVER_IP}:${DEST}/server_config.toml"
 else
-  if ! ssh -o StrictHostKeyChecking=no "root@${SERVER_IP}" "test -f ${DEST}/server_config.toml"; then
-    scp -o StrictHostKeyChecking=no "$cfg" "root@${SERVER_IP}:${DEST}/server_config.toml"
+  if ! ssh $SSH_OPTS "root@${SERVER_IP}" "test -f ${DEST}/server_config.toml"; then
+    scp $SSH_OPTS "$cfg" "root@${SERVER_IP}:${DEST}/server_config.toml"
   fi
 fi
 
@@ -241,8 +244,8 @@ Environment=ROBUST_NUMERICS_AVX=true
 WantedBy=multi-user.target
 EOF
 
-scp -o StrictHostKeyChecking=no "$tmpdir/${UNIT}" "root@${SERVER_IP}:/etc/systemd/system/${UNIT}"
-ssh -o StrictHostKeyChecking=no "root@${SERVER_IP}" "systemctl daemon-reload && systemctl enable ${UNIT} || true && systemctl restart ${UNIT} && systemctl status --no-pager ${UNIT} || true"
+scp $SSH_OPTS "$tmpdir/${UNIT}" "root@${SERVER_IP}:/etc/systemd/system/${UNIT}"
+ssh $SSH_OPTS "root@${SERVER_IP}" "systemctl daemon-reload && systemctl enable ${UNIT} || true && systemctl restart ${UNIT} && systemctl status --no-pager ${UNIT} || true"
 '''
         }
       }
