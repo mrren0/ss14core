@@ -1,6 +1,11 @@
 pipeline {
   agent any
-  options { timestamps(); ansiColor('xterm'); durabilityHint('PERFORMANCE_OPTIMIZED') }
+  options {
+    timestamps()
+    ansiColor('xterm')
+    durabilityHint('PERFORMANCE_OPTIMIZED')
+    disableConcurrentBuilds()
+  }
 
   parameters {
     string(name: 'BRANCH', defaultValue: 'master', description: 'Ветка деплоя')
@@ -33,6 +38,7 @@ pipeline {
   environment {
     DOTNET_CLI_TELEMETRY_OPTOUT = '1'
     GIT_TERMINAL_PROMPT = '0'
+    MSBUILDDISABLENODEREUSE = '1'
   }
 
   stages {
@@ -62,10 +68,12 @@ git -C src config --local safe.directory "$(pwd)/src" || true
       steps {
         sh '''#!/usr/bin/env bash
 set -euo pipefail
-mkdir -p .dotnet
+mkdir -p .dotnet .dotnet_home msbuild_debug
+export MSBUILDDEBUGPATH="$PWD/msbuild_debug"
 curl -fsSL --retry 8 --retry-all-errors --retry-delay 2 -o dotnet-install.sh https://dot.net/v1/dotnet-install.sh
 bash dotnet-install.sh --install-dir "$PWD/.dotnet" --channel 9.0
 export PATH="$PWD/.dotnet:$PATH"
+export DOTNET_CLI_HOME="$PWD/.dotnet_home"
 dotnet --info
 '''
       }
@@ -73,15 +81,30 @@ dotnet --info
 
     stage('Build & Package') {
       steps {
-        sh '''#!/usr/bin/env bash
+        retry(1) {
+          sh '''#!/usr/bin/env bash
 set -Eeuo pipefail
 export PATH="$PWD/.dotnet:$PATH"
+export DOTNET_CLI_HOME="$PWD/.dotnet_home"
+export MSBUILDDISABLENODEREUSE=1
+export MSBUILDDEBUGPATH="$PWD/msbuild_debug"
+
+# убираем залипшие воркеры после рестартов Jenkins
+pkill -f 'MSBuild.dll' || true
+pkill -f 'VBCSCompiler' || true
+
 cd src
 ( while true; do echo "[keepalive] $(date -Iseconds) build alive"; sleep 55; done ) & KA=$!
 trap 'kill $KA 2>/dev/null || true' EXIT
-stdbuf -oL -eL dotnet build Content.Packaging --configuration Release -v minimal
-stdbuf -oL -eL dotnet run --project Content.Packaging server --hybrid-acz --platform linux-x64
+
+dotnet clean Content.Packaging -c Release || true
+# без параллелизма и без shared compilation — стабильнее в CI
+dotnet build Content.Packaging -c Release -v minimal -m:1 \
+  /p:BuildInParallel=false /p:UseSharedCompilation=false
+
+dotnet run --project Content.Packaging server --hybrid-acz --platform linux-x64
 '''
+        }
       }
     }
 
@@ -102,7 +125,7 @@ else
     exit 1
   fi
   unzip -o "$ZIP_FILE" -d artifact/
-  [ -f artifact/Robust.Server ] && chmod +x artifact/Robust.Server || true
+  [ -f artifact/Robust.Server ] && chmod -v +x artifact/Robust.Server || true
 fi
 tar -C artifact -czf "ss14-server-${BRANCH}.tar.gz" .
 '''
@@ -171,7 +194,7 @@ fi
 # заливка бинарей
 rsync -a --delete --exclude 'server_config.toml' --exclude 'data/' -e "ssh $SSH_OPTS" artifact/ "${SSH_USER}@${SERVER_IP}:${DEST}/"
 
-# сформировать базовый server_config.toml (без desc!)
+# server_config.toml (без desc — добавим отдельно в секцию [game])
 tmpdir="$(mktemp -d)"; cfg="$tmpdir/server_config.toml"
 SERVER_NAME_E="$(esc "$SERVER_NAME")"; HUB_TAGS_E="$(esc "$HUB_TAGS")"
 
@@ -220,21 +243,18 @@ sqlite_dbpath = "preferences.db"
 EOF
 fi
 
-# загрузка конфига (идемпотентно)
+# загрузка конфига
 if [ "${FORCE_CONFIG}" = "true" ] || ! ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "test -f ${DEST}/server_config.toml"; then
   scp $SSH_OPTS "$cfg" "${SSH_USER}@${SERVER_IP}:${DEST}/server_config.toml"
 fi
 
-# правка ОПИСАНИЯ: чистим старые desc в [game] и добавляем нашу строку
+# ОПИСАНИЕ: чистим старые desc в [game] и добавляем нашу строку
 SERVER_DESC_E="$(esc "$SERVER_DESC")"
 ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" /bin/bash -lc '
   set -Eeuo pipefail
   CFG="'"${DEST}"'/server_config.toml"
-  # удалить desc/description только в секции [game]
   sudo sed -i -E "/^\\[game\\]/,/^\\[/{/^[[:space:]]*(desc|description)[[:space:]]*=.*/d}" "$CFG"
-  # добавить нашу строку сразу после заголовка [game]
   sudo sed -i -E "/^\\[game\\]$/a desc = \"'"${SERVER_DESC_E}"'\"" "$CFG"
-  # совместимость: удалить устаревший BasePort, если был
   sudo sed -i -E "/^BasePort[[:space:]]*=.*/d" "$CFG"
 '
 
@@ -269,7 +289,7 @@ ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" /bin/bash -lc '
   set -e
   sleep 2
   ss -lntup | grep -q ":'"${PORT}"'\\b" || { sudo journalctl -u '"${UNIT}"' -n 200 --no-pager; exit 1; }
-  which jq >/dev/null 2>&1 || sudo apt-get update -y && sudo apt-get install -y jq
+  which jq >/dev/null 2>&1 || { sudo apt-get update -y && sudo apt-get install -y jq; }
   DESC_OUT="$(curl -s http://127.0.0.1:'"${PORT}"'/info | jq -r .desc || true)"
   echo "desc: ${DESC_OUT}"
   test "${DESC_OUT}" = "'"${SERVER_DESC_E}"'" || { echo "❌ desc не применился"; exit 1; }
@@ -281,6 +301,9 @@ ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" /bin/bash -lc '
   }
 
   post {
+    always {
+      archiveArtifacts artifacts: 'msbuild_debug/**', allowEmptyArchive: true
+    }
     success { echo '✅ Deploy completed.' }
     failure { echo '❌ Deploy failed.' }
   }
