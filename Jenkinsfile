@@ -77,8 +77,6 @@ dotnet --info
 set -Eeuo pipefail
 export PATH="$PWD/.dotnet:$PATH"
 cd src
-
-# keepalive для Jenkins
 ( while true; do echo "[keepalive] $(date -Iseconds) build alive"; sleep 55; done ) & KA=$!
 trap 'kill $KA 2>/dev/null || true' EXIT
 stdbuf -oL -eL dotnet build Content.Packaging --configuration Release -v minimal
@@ -119,17 +117,14 @@ tar -C artifact -czf "ss14-server-${BRANCH}.tar.gz" .
 set -Eeuo pipefail
 
 SSH_OPTS="-o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=120"
-
 esc() { printf '%s' "$1" | sed -e 's/\\\\/\\\\\\\\/g' -e 's/"/\\\\\\"/g'; }
 
 repo_path="$(printf '%s' "${REPO}" | sed -E 's#(git@github.com:|https://github.com/)([^/]+/[^/.]+)(\\.git)?#\\2#')"
-owner="${repo_path%%/*}"
-repo="${repo_path##*/}"
+owner="${repo_path%%/*}"; repo="${repo_path##*/}"
 safe_branch="$(printf '%s' "${BRANCH}" | tr '/ ' '_' | tr -cd 'A-Za-z0-9._-')"
 
 DEST="/opt/${owner}/${repo}/${safe_branch}"
 PORT="${PORT}"
-PORT_NEXT=$((PORT+1))
 
 ssh $SSH_OPTS "root@${SERVER_IP}" "mkdir -p \"${DEST}\""
 
@@ -139,13 +134,13 @@ rsync -a --delete \
   --exclude 'data/' \
   -e "ssh $SSH_OPTS" artifact/ "root@${SERVER_IP}:${DEST}/"
 
-# firewall (порт и статус-порт = PORT+1)
+# firewall (только PORT)
 if ssh $SSH_OPTS "root@${SERVER_IP}" "command -v ufw >/dev/null 2>&1"; then
-  ssh $SSH_OPTS "root@${SERVER_IP}" "ufw allow ${PORT}/tcp || true; ufw allow ${PORT}/udp || true; ufw allow ${PORT_NEXT}/tcp || true; ufw allow ${PORT_NEXT}/udp || true"
+  ssh $SSH_OPTS "root@${SERVER_IP}" "ufw allow ${PORT}/tcp || true; ufw allow ${PORT}/udp || true"
 elif ssh $SSH_OPTS "root@${SERVER_IP}" "command -v firewall-cmd >/dev/null 2>&1"; then
-  ssh $SSH_OPTS "root@${SERVER_IP}" "firewall-cmd --permanent --add-port=${PORT}/tcp || true; firewall-cmd --permanent --add-port=${PORT}/udp || true; firewall-cmd --permanent --add-port=${PORT_NEXT}/tcp || true; firewall-cmd --permanent --add-port=${PORT_NEXT}/udp || true; firewall-cmd --reload || true"
+  ssh $SSH_OPTS "root@${SERVER_IP}" "firewall-cmd --permanent --add-port=${PORT}/tcp || true; firewall-cmd --permanent --add-port=${PORT}/udp || true; firewall-cmd --reload || true"
 else
-  ssh $SSH_OPTS "root@${SERVER_IP}" "iptables -I INPUT -p tcp --dport ${PORT} -j ACCEPT || true; iptables -I INPUT -p udp --dport ${PORT} -j ACCEPT || true; iptables -I INPUT -p tcp --dport ${PORT_NEXT} -j ACCEPT || true; iptables -I INPUT -p udp --dport ${PORT_NEXT} -j ACCEPT || true"
+  ssh $SSH_OPTS "root@${SERVER_IP}" "iptables -I INPUT -p tcp --dport ${PORT} -j ACCEPT || true; iptables -I INPUT -p udp --dport ${PORT} -j ACCEPT || true"
 fi
 
 # server_config.toml
