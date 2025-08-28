@@ -1,6 +1,6 @@
 pipeline {
   agent any
-  options { timestamps(); ansiColor('xterm') }
+  options { timestamps(); ansiColor('xterm'); durabilityHint('PERFORMANCE_OPTIMIZED') }
 
   parameters {
     string(name: 'BRANCH', defaultValue: 'master', description: 'Ветка деплоя')
@@ -74,11 +74,16 @@ dotnet --info
     stage('Build & Package') {
       steps {
         sh '''#!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 export PATH="$PWD/.dotnet:$PATH"
 cd src
-dotnet build Content.Packaging --configuration Release
-dotnet run --project Content.Packaging server --hybrid-acz --platform linux-x64
+
+# keepalive, чтобы Jenkins не терял heartbeat
+( while true; do echo "[keepalive] $(date -Iseconds) build alive"; sleep 55; done ) & KA=$!
+trap 'kill $KA 2>/dev/null || true' EXIT
+
+stdbuf -oL -eL dotnet build Content.Packaging --configuration Release -v minimal
+stdbuf -oL -eL dotnet run --project Content.Packaging server --hybrid-acz --platform linux-x64
 '''
       }
     }
@@ -112,7 +117,7 @@ tar -C artifact -czf "ss14-server-${BRANCH}.tar.gz" .
       steps {
         sshagent (credentials: [params.SERVER_IP]) {
           sh '''#!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 
 # esc для TOML строк
 esc() { printf '%s' "$1" | sed -e 's/\\\\/\\\\\\\\/g' -e 's/"/\\\\\\"/g'; }
