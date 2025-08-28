@@ -143,7 +143,7 @@ else
   ssh $SSH_OPTS "root@${SERVER_IP}" "iptables -I INPUT -p tcp --dport ${PORT} -j ACCEPT || true; iptables -I INPUT -p udp --dport ${PORT} -j ACCEPT || true"
 fi
 
-# server_config.toml
+# server_config.toml (порт и статус-порт в одном числе)
 tmpdir="$(mktemp -d)"; cfg="$tmpdir/server_config.toml"
 SERVER_NAME_E="$(esc "$SERVER_NAME")"; SERVER_DESC_E="$(esc "$SERVER_DESC")"; HUB_TAGS_E="$(esc "$HUB_TAGS")"
 
@@ -168,10 +168,15 @@ tags = "${HUB_TAGS_E}"
 desc = "${SERVER_DESC_E}"
 EOF
 
-if [ -n "${SERVER_DOMAIN:-}" ]; then
-  echo "server_url = \"ss14://${SERVER_DOMAIN}:${PORT}\"" >> "$cfg"
-fi
+[ -n "${SERVER_DOMAIN:-}" ] && echo "server_url = \"ss14://${SERVER_DOMAIN}:${PORT}\"" >> "$cfg"
 
+# статус на том же порту
+cat >>"$cfg" <<EOF
+[status]
+bind = "*:${PORT}"
+EOF
+
+# БД
 if [ "${DB_ENGINE}" = "postgres" ]; then
   PG_HOST_E="$(esc "$PG_HOST")"; PG_DB_E="$(esc "$PG_DB")"; PG_USER_E="$(esc "$PG_USER")"; PG_PASS_E="$(esc "$PG_PASS")"
   cat >>"$cfg" <<EOF
@@ -201,7 +206,7 @@ sqlite_dbpath = "preferences.db"
 EOF
 fi
 
-# политика перезаписи
+# запись конфига
 if [ "${FORCE_CONFIG}" = "true" ]; then
   scp $SSH_OPTS "$cfg" "root@${SERVER_IP}:${DEST}/server_config.toml"
 else
@@ -210,7 +215,7 @@ else
   fi
 fi
 
-# systemd unit с BasePort
+# systemd unit БЕЗ --cvar BasePort, читаем только конфиг
 UNIT="ss14-${safe_branch}.service"
 cat >"$tmpdir/${UNIT}" <<EOF
 [Unit]
@@ -220,7 +225,7 @@ Wants=network-online.target
 
 [Service]
 WorkingDirectory=${DEST}
-ExecStart=${DEST}/Robust.Server --cfg ${DEST}/server_config.toml --cvar BasePort=${PORT}
+ExecStart=${DEST}/Robust.Server --cfg ${DEST}/server_config.toml
 Restart=always
 RestartSec=3
 Environment=DOTNET_TieredPGO=1
@@ -232,7 +237,10 @@ WantedBy=multi-user.target
 EOF
 
 scp $SSH_OPTS "$tmpdir/${UNIT}" "root@${SERVER_IP}:/etc/systemd/system/${UNIT}"
-ssh $SSH_OPTS "root@${SERVER_IP}" "systemctl daemon-reload && systemctl enable ${UNIT} || true && systemctl restart ${UNIT} && systemctl status --no-pager ${UNIT} || true"
+ssh $SSH_OPTS "root@${SERVER_IP}" "systemctl daemon-reload && systemctl enable ${UNIT} || true && systemctl restart ${UNIT}"
+
+# проверка: слушается ли нужный порт, иначе вывод лога и ошибка
+ssh $SSH_OPTS "root@${SERVER_IP}" "sleep 2; ss -lntup | grep -q ':${PORT}\\b' || { journalctl -u ${UNIT} -n 200 --no-pager; exit 1; } && systemctl status ${UNIT} --no-pager || true"
 '''
         }
       }
