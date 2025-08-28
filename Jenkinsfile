@@ -5,16 +5,10 @@ pipeline {
   parameters {
     string(name: 'BRANCH', defaultValue: 'master', description: 'Ветка деплоя')
     string(name: 'REPO', defaultValue: 'https://github.com/thunder-ss14/corporate-war.git', description: 'Git repo (https или ssh)')
-    
-    // РАЗДЕЛЕНО: отдельный параметр для IP сервера
     string(name: 'SERVER_IP', defaultValue: '162.19.232.192', description: 'IP адрес сервера')
-    
-    // РАЗДЕЛЕНО: отдельный параметр для ID SSH credentials
     string(name: 'SSH_CREDENTIALS_ID', defaultValue: '162.19.232.192', description: 'ID SSH credentials в Jenkins')
-    
     string(name: 'PORT', defaultValue: '1212', description: 'Порт сервера')
 
-    // server_config.toml
     string(name: 'SERVER_NAME', defaultValue: 'TRAIN TDM 3000 TICKETS NO RULES 24/7', description: 'Имя сервера')
     string(name: 'SERVER_DESC', defaultValue: 'DEATH MATCH', description: 'Описание (можно пустое)')
     string(name: 'SERVER_DOMAIN', defaultValue: 'thunderhub.online', description: 'Домен (для server_url)')
@@ -118,11 +112,12 @@ tar -C artifact -czf "ss14-server-${BRANCH}.tar.gz" .
 
     stage('Deploy via SSH') {
       steps {
-        // ИСПРАВЛЕНО: используем отдельный параметр для credentials
-        sshagent (credentials: [params.SSH_CREDENTIALS_ID]) {
+        withCredentials([sshUserPrivateKey(credentialsId: params.SSH_CREDENTIALS_ID,
+                                           keyFileVariable: 'SSH_KEY',
+                                           usernameVariable: 'SSH_USER')]) {
           sh '''#!/usr/bin/env bash
 set -Eeuo pipefail
-SSH_OPTS="-o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=120"
+SSH_OPTS="-o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=120 -i \"$SSH_KEY\""
 esc() { printf '%s' "$1" | sed -e 's/\\\\/\\\\\\\\/g' -e 's/"/\\\\\\"/g'; }
 
 repo_path="$(printf '%s' "${REPO}" | sed -E 's#(git@github.com:|https://github.com/)([^/]+/[^/.]+)(\\.git)?#\\2#')"
@@ -130,26 +125,26 @@ owner="${repo_path%%/*}"; repo="${repo_path##*/}"
 safe_branch="$(printf '%s' "${BRANCH}" | tr '/ ' '_' | tr -cd 'A-Za-z0-9._-')"
 
 DEST="/opt/${owner}/${repo}/${safe_branch}"
-PORT="${PORT}"
 
-ssh $SSH_OPTS "root@${SERVER_IP}" "mkdir -p \"${DEST}\""
+# Подготовка каталога назначения под sudo и передача прав пользователю
+ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "sudo mkdir -p \"${DEST}\" && sudo chown -R ${SSH_USER}:${SSH_USER} \"${DEST}\""
 
-# бинарники
+# Заливка бинарей
 rsync -a --delete \
   --exclude 'server_config.toml' \
   --exclude 'data/' \
-  -e "ssh $SSH_OPTS" artifact/ "root@${SERVER_IP}:${DEST}/"
+  -e "ssh $SSH_OPTS" artifact/ "${SSH_USER}@${SERVER_IP}:${DEST}/"
 
-# firewall (только PORT)
-if ssh $SSH_OPTS "root@${SERVER_IP}" "command -v ufw >/dev/null 2>&1"; then
-  ssh $SSH_OPTS "root@${SERVER_IP}" "ufw allow ${PORT}/tcp || true; ufw allow ${PORT}/udp || true"
-elif ssh $SSH_OPTS "root@${SERVER_IP}" "command -v firewall-cmd >/dev/null 2>&1"; then
-  ssh $SSH_OPTS "root@${SERVER_IP}" "firewall-cmd --permanent --add-port=${PORT}/tcp || true; firewall-cmd --permanent --add-port=${PORT}/udp || true; firewall-cmd --reload || true"
+# Открыть порт (sudo)
+if ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "command -v ufw >/dev/null 2>&1"; then
+  ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "sudo ufw allow ${PORT}/tcp || true; sudo ufw allow ${PORT}/udp || true"
+elif ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "command -v firewall-cmd >/dev/null 2>&1"; then
+  ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "sudo firewall-cmd --permanent --add-port=${PORT}/tcp || true; sudo firewall-cmd --permanent --add-port=${PORT}/udp || true; sudo firewall-cmd --reload || true"
 else
-  ssh $SSH_OPTS "root@${SERVER_IP}" "iptables -I INPUT -p tcp --dport ${PORT} -j ACCEPT || true; iptables -I INPUT -p udp --dport ${PORT} -j ACCEPT || true"
+  ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "sudo iptables -I INPUT -p tcp --dport ${PORT} -j ACCEPT || true; sudo iptables -I INPUT -p udp --dport ${PORT} -j ACCEPT || true"
 fi
 
-# server_config.toml — генерим заново с кавычками у server_url
+# server_config.toml
 tmpdir="$(mktemp -d)"; cfg="$tmpdir/server_config.toml"
 SERVER_NAME_E="$(esc "$SERVER_NAME")"; SERVER_DESC_E="$(esc "$SERVER_DESC")"; HUB_TAGS_E="$(esc "$HUB_TAGS")"
 
@@ -174,18 +169,15 @@ tags = "${HUB_TAGS_E}"
 desc = "${SERVER_DESC_E}"
 EOF
 
-# ВАЖНО: server_url в кавычках
 if [ -n "${SERVER_DOMAIN:-}" ]; then
   printf 'server_url = "ss14://%s:%s"\\n' "${SERVER_DOMAIN}" "${PORT}" >> "$cfg"
 fi
 
-# статус на том же порту
 cat >>"$cfg" <<EOF
 [status]
 bind = "*:${PORT}"
 EOF
 
-# БД
 if [ "${DB_ENGINE}" = "postgres" ]; then
   PG_HOST_E="$(esc "$PG_HOST")"; PG_DB_E="$(esc "$PG_DB")"; PG_USER_E="$(esc "$PG_USER")"; PG_PASS_E="$(esc "$PG_PASS")"
   cat >>"$cfg" <<EOF
@@ -196,40 +188,31 @@ pg_port = ${PG_PORT}
 pg_database = "${PG_DB_E}"
 pg_username = "${PG_USER_E}"
 pg_password = "${PG_PASS_E}"
-# SQLite (шаблон, отключён):
-# engine = "sqlite"
-# sqlite_dbpath = "preferences.db"
 EOF
 else
   cat >>"$cfg" <<'EOF'
 [database]
 engine = "sqlite"
 sqlite_dbpath = "preferences.db"
-# Postgres (шаблон, отключён):
-# engine = "postgres"
-# pg_host = "localhost"
-# pg_port = 5432
-# pg_database = "ss14"
-# pg_username = "user"
-# pg_password = "pass"
 EOF
 fi
 
-# перезапись конфига
+# Перезапись конфига
 if [ "${FORCE_CONFIG}" = "true" ]; then
-  scp $SSH_OPTS "$cfg" "root@${SERVER_IP}:${DEST}/server_config.toml"
+  scp $SSH_OPTS "$cfg" "${SSH_USER}@${SERVER_IP}:${DEST}/server_config.toml"
 else
-  if ! ssh $SSH_OPTS "root@${SERVER_IP}" "test -f ${DEST}/server_config.toml"; then
-    scp $SSH_OPTS "$cfg" "root@${SERVER_IP}:${DEST}/server_config.toml"
+  if ! ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "test -f ${DEST}/server_config.toml"; then
+    scp $SSH_OPTS "$cfg" "${SSH_USER}@${SERVER_IP}:${DEST}/server_config.toml"
   fi
 fi
 
-# страховка: удалить старый мусор BasePort из конфига, если вдруг остался
-ssh $SSH_OPTS "root@${SERVER_IP}" "sed -i '/^BasePort[[:space:]]*=.*/d' '${DEST}/server_config.toml'"
+# Удалить устаревший BasePort
+ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "sed -i '/^BasePort[[:space:]]*=.*/d' '${DEST}/server_config.toml'"
 
-# systemd unit БЕЗ --cfg и БЕЗ --cvar
+# systemd unit: копируем в /tmp, затем sudo mv
 UNIT="ss14-${safe_branch}.service"
-cat >"$tmpdir/${UNIT}" <<EOF
+unit_local="$tmpdir/${UNIT}"
+cat >"$unit_local" <<EOF
 [Unit]
 Description=SS14 ${safe_branch} server
 After=network-online.target
@@ -248,11 +231,11 @@ Environment=ROBUST_NUMERICS_AVX=true
 WantedBy=multi-user.target
 EOF
 
-scp $SSH_OPTS "$tmpdir/${UNIT}" "root@${SERVER_IP}:/etc/systemd/system/${UNIT}"
-ssh $SSH_OPTS "root@${SERVER_IP}" "systemctl daemon-reload && systemctl enable ${UNIT} || true && systemctl restart ${UNIT}"
+scp $SSH_OPTS "$unit_local" "${SSH_USER}@${SERVER_IP}:/tmp/${UNIT}"
+ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "sudo mv /tmp/${UNIT} /etc/systemd/system/${UNIT} && sudo systemctl daemon-reload && sudo systemctl enable ${UNIT} || true && sudo systemctl restart ${UNIT}"
 
-# проверка: слушается именно ${PORT}, иначе показать лог и упасть
-ssh $SSH_OPTS "root@${SERVER_IP}" "sleep 2; ss -lntup | grep -q ':${PORT}\\b' || { journalctl -u ${UNIT} -n 200 --no-pager; exit 1; } && systemctl status ${UNIT} --no-pager || true"
+# Проверка порта и статуса
+ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "sleep 2; ss -lntup | grep -q ':${PORT}\\b' || { sudo journalctl -u ${UNIT} -n 200 --no-pager; exit 1; } && sudo systemctl status ${UNIT} --no-pager || true"
 '''
         }
       }
