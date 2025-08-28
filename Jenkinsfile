@@ -143,7 +143,7 @@ else
   ssh $SSH_OPTS "root@${SERVER_IP}" "iptables -I INPUT -p tcp --dport ${PORT} -j ACCEPT || true; iptables -I INPUT -p udp --dport ${PORT} -j ACCEPT || true"
 fi
 
-# server_config.toml (порт и статус-порт в одном числе)
+# server_config.toml — генерим заново с кавычками у server_url
 tmpdir="$(mktemp -d)"; cfg="$tmpdir/server_config.toml"
 SERVER_NAME_E="$(esc "$SERVER_NAME")"; SERVER_DESC_E="$(esc "$SERVER_DESC")"; HUB_TAGS_E="$(esc "$HUB_TAGS")"
 
@@ -168,7 +168,10 @@ tags = "${HUB_TAGS_E}"
 desc = "${SERVER_DESC_E}"
 EOF
 
-[ -n "${SERVER_DOMAIN:-}" ] && echo "server_url = \"ss14://${SERVER_DOMAIN}:${PORT}\"" >> "$cfg"
+# ВАЖНО: server_url в кавычках
+if [ -n "${SERVER_DOMAIN:-}" ]; then
+  printf 'server_url = "ss14://%s:%s"\\n' "${SERVER_DOMAIN}" "${PORT}" >> "$cfg"
+fi
 
 # статус на том же порту
 cat >>"$cfg" <<EOF
@@ -206,7 +209,7 @@ sqlite_dbpath = "preferences.db"
 EOF
 fi
 
-# запись конфига
+# перезапись конфига
 if [ "${FORCE_CONFIG}" = "true" ]; then
   scp $SSH_OPTS "$cfg" "root@${SERVER_IP}:${DEST}/server_config.toml"
 else
@@ -215,7 +218,10 @@ else
   fi
 fi
 
-# systemd unit БЕЗ --cvar BasePort, читаем только конфиг
+# страховка: удалить старый мусор BasePort из конфига, если вдруг остался
+ssh $SSH_OPTS "root@${SERVER_IP}" "sed -i '/^BasePort[[:space:]]*=.*/d' '${DEST}/server_config.toml'"
+
+# systemd unit БЕЗ --cfg и БЕЗ --cvar
 UNIT="ss14-${safe_branch}.service"
 cat >"$tmpdir/${UNIT}" <<EOF
 [Unit]
@@ -225,7 +231,7 @@ Wants=network-online.target
 
 [Service]
 WorkingDirectory=${DEST}
-ExecStart=${DEST}/Robust.Server --cfg ${DEST}/server_config.toml
+ExecStart=${DEST}/Robust.Server
 Restart=always
 RestartSec=3
 Environment=DOTNET_TieredPGO=1
@@ -239,7 +245,7 @@ EOF
 scp $SSH_OPTS "$tmpdir/${UNIT}" "root@${SERVER_IP}:/etc/systemd/system/${UNIT}"
 ssh $SSH_OPTS "root@${SERVER_IP}" "systemctl daemon-reload && systemctl enable ${UNIT} || true && systemctl restart ${UNIT}"
 
-# проверка: слушается ли нужный порт, иначе вывод лога и ошибка
+# проверка: слушается именно ${PORT}, иначе показать лог и упасть
 ssh $SSH_OPTS "root@${SERVER_IP}" "sleep 2; ss -lntup | grep -q ':${PORT}\\b' || { journalctl -u ${UNIT} -n 200 --no-pager; exit 1; } && systemctl status ${UNIT} --no-pager || true"
 '''
         }
