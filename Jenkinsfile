@@ -119,7 +119,6 @@ tar -C artifact -czf "ss14-server-${BRANCH}.tar.gz" .
 set -Eeuo pipefail
 SSH_OPTS="-o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=120 -i \"$SSH_KEY\""
 
-# Проверка Microsoft.NETCore.App 9.*
 if ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "dotnet --list-runtimes 2>/dev/null | grep -q '^Microsoft.NETCore.App 9\\.'"; then
   echo "dotnet 9 runtime: OK"
 else
@@ -161,20 +160,9 @@ safe_branch="$(printf '%s' "${BRANCH}" | tr '/ ' '_' | tr -cd 'A-Za-z0-9._-')"
 
 DEST="/opt/${owner}/${repo}/${safe_branch}"
 
-# Каталог, права и logs/
 ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "sudo mkdir -p '${DEST}/logs' && sudo chown -R ${SSH_USER}:${SSH_USER} '${DEST}'"
 
-# Заливка бинарей
 rsync -a --delete --exclude 'server_config.toml' --exclude 'data/' -e "ssh $SSH_OPTS" artifact/ "${SSH_USER}@${SERVER_IP}:${DEST}/"
-
-# Фаервол
-if ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "command -v ufw >/dev/null 2>&1"; then
-  ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "sudo ufw allow ${PORT}/tcp || true; sudo ufw allow ${PORT}/udp || true"
-elif ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "command -v firewall-cmd >/dev/null 2>&1"; then
-  ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "sudo firewall-cmd --permanent --add-port=${PORT}/tcp || true; sudo firewall-cmd --permanent --add-port=${PORT}/udp || true; sudo firewall-cmd --reload || true"
-else
-  ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "sudo iptables -I INPUT -p tcp --dport ${PORT} -j ACCEPT || true; sudo iptables -I INPUT -p udp --dport ${PORT} -j ACCEPT || true"
-fi
 
 # server_config.toml
 tmpdir="$(mktemp -d)"; cfg="$tmpdir/server_config.toml"
@@ -187,7 +175,6 @@ port = ${PORT}
 
 [game]
 hostname = "${SERVER_NAME_E}"
-description = "${SERVER_DESC_E}"
 lobbyenabled = ${LOBBYENABLED}
 maxplayers = ${MAX_PLAYERS}
 soft_max_players = ${SOFT_MAX_PLAYERS}
@@ -198,7 +185,7 @@ mode = ${AUTH_MODE}
 [hub]
 advertise = true
 tags = "${HUB_TAGS_E}"
-desc = "${SERVER_DESC_E}"
+hub_desc = "${SERVER_DESC_E}"
 EOF
 
 [ -n "${SERVER_DOMAIN:-}" ] && printf 'server_url = "ss14://%s:%s"\\n' "${SERVER_DOMAIN}" "${PORT}" >> "$cfg"
@@ -227,7 +214,6 @@ sqlite_dbpath = "preferences.db"
 EOF
 fi
 
-# Перезапись/создание конфига
 if [ "${FORCE_CONFIG}" = "true" ]; then
   scp $SSH_OPTS "$cfg" "${SSH_USER}@${SERVER_IP}:${DEST}/server_config.toml"
 else
@@ -236,10 +222,8 @@ else
   fi
 fi
 
-# Удалить устаревший BasePort
 ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "sed -i '/^BasePort[[:space:]]*=.*/d' '${DEST}/server_config.toml'"
 
-# systemd unit c User/Group
 UNIT="ss14-${safe_branch}.service"
 unit_local="$tmpdir/${UNIT}"
 cat >"$unit_local" <<EOF
@@ -266,7 +250,6 @@ EOF
 scp $SSH_OPTS "$unit_local" "${SSH_USER}@${SERVER_IP}:/tmp/${UNIT}"
 ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "sudo mv /tmp/${UNIT} /etc/systemd/system/${UNIT} && sudo systemctl daemon-reload && sudo systemctl enable ${UNIT} || true && sudo systemctl restart ${UNIT}"
 
-# Проверка порта и статуса
 ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "sleep 2; ss -lntup | grep -q ':${PORT}\\b' || { sudo journalctl -u ${UNIT} -n 200 --no-pager; exit 1; } && sudo systemctl status ${UNIT} --no-pager || true"
 '''
         }
