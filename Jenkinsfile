@@ -110,6 +110,45 @@ tar -C artifact -czf "ss14-server-${BRANCH}.tar.gz" .
       }
     }
 
+    stage('Ensure .NET 9 runtime on target') {
+      steps {
+        withCredentials([sshUserPrivateKey(credentialsId: params.SSH_CREDENTIALS_ID,
+                                           keyFileVariable: 'SSH_KEY',
+                                           usernameVariable: 'SSH_USER')]) {
+          sh '''#!/usr/bin/env bash
+set -Eeuo pipefail
+SSH_OPTS="-o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=120 -i \"$SSH_KEY\""
+
+# Проверка наличия Microsoft.NETCore.App 9.*
+if ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "dotnet --list-runtimes 2>/dev/null | grep -q '^Microsoft.NETCore.App 9\\.'"; then
+  echo "dotnet 9 runtime: OK"
+else
+  echo "dotnet 9 runtime: INSTALL"
+  # Подключить MS repo и установить runtime 9 (идемпотентно)
+  ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" /bin/bash -lc '
+    set -Eeuo pipefail
+    if ! dpkg -s packages-microsoft-prod >/dev/null 2>&1; then
+      . /etc/os-release
+      UBU="${VERSION_ID:-22.04}"
+      URL="https://packages.microsoft.com/config/ubuntu/${UBU}/packages-microsoft-prod.deb"
+      if ! curl -fsSL "$URL" -o /tmp/ms.deb; then
+        curl -fsSL "https://packages.microsoft.com/config/ubuntu/22.04/packages-microsoft-prod.deb" -o /tmp/ms.deb
+      fi
+      sudo dpkg -i /tmp/ms.deb
+      rm -f /tmp/ms.deb
+    fi
+    sudo apt-get update -y
+    sudo apt-get install -y dotnet-runtime-9.0
+  '
+  # Верификация
+  ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "dotnet --list-runtimes | grep -q '^Microsoft.NETCore.App 9\\.'"
+  echo "dotnet 9 runtime: INSTALLED"
+fi
+'''
+        }
+      }
+    }
+
     stage('Deploy via SSH') {
       steps {
         withCredentials([sshUserPrivateKey(credentialsId: params.SSH_CREDENTIALS_ID,
@@ -126,16 +165,13 @@ safe_branch="$(printf '%s' "${BRANCH}" | tr '/ ' '_' | tr -cd 'A-Za-z0-9._-')"
 
 DEST="/opt/${owner}/${repo}/${safe_branch}"
 
-# Подготовка каталога назначения под sudo и передача прав пользователю
 ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "sudo mkdir -p \"${DEST}\" && sudo chown -R ${SSH_USER}:${SSH_USER} \"${DEST}\""
 
-# Заливка бинарей
 rsync -a --delete \
   --exclude 'server_config.toml' \
   --exclude 'data/' \
   -e "ssh $SSH_OPTS" artifact/ "${SSH_USER}@${SERVER_IP}:${DEST}/"
 
-# Открыть порт (sudo)
 if ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "command -v ufw >/dev/null 2>&1"; then
   ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "sudo ufw allow ${PORT}/tcp || true; sudo ufw allow ${PORT}/udp || true"
 elif ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "command -v firewall-cmd >/dev/null 2>&1"; then
@@ -144,7 +180,6 @@ else
   ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "sudo iptables -I INPUT -p tcp --dport ${PORT} -j ACCEPT || true; sudo iptables -I INPUT -p udp --dport ${PORT} -j ACCEPT || true"
 fi
 
-# server_config.toml
 tmpdir="$(mktemp -d)"; cfg="$tmpdir/server_config.toml"
 SERVER_NAME_E="$(esc "$SERVER_NAME")"; SERVER_DESC_E="$(esc "$SERVER_DESC")"; HUB_TAGS_E="$(esc "$HUB_TAGS")"
 
@@ -197,7 +232,6 @@ sqlite_dbpath = "preferences.db"
 EOF
 fi
 
-# Перезапись конфига
 if [ "${FORCE_CONFIG}" = "true" ]; then
   scp $SSH_OPTS "$cfg" "${SSH_USER}@${SERVER_IP}:${DEST}/server_config.toml"
 else
@@ -206,10 +240,8 @@ else
   fi
 fi
 
-# Удалить устаревший BasePort
 ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "sed -i '/^BasePort[[:space:]]*=.*/d' '${DEST}/server_config.toml'"
 
-# systemd unit: копируем в /tmp, затем sudo mv
 UNIT="ss14-${safe_branch}.service"
 unit_local="$tmpdir/${UNIT}"
 cat >"$unit_local" <<EOF
@@ -234,7 +266,6 @@ EOF
 scp $SSH_OPTS "$unit_local" "${SSH_USER}@${SERVER_IP}:/tmp/${UNIT}"
 ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "sudo mv /tmp/${UNIT} /etc/systemd/system/${UNIT} && sudo systemctl daemon-reload && sudo systemctl enable ${UNIT} || true && sudo systemctl restart ${UNIT}"
 
-# Проверка порта и статуса
 ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "sleep 2; ss -lntup | grep -q ':${PORT}\\b' || { sudo journalctl -u ${UNIT} -n 200 --no-pager; exit 1; } && sudo systemctl status ${UNIT} --no-pager || true"
 '''
         }
