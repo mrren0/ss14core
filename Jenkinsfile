@@ -7,6 +7,7 @@ pipeline {
     string(name: 'REPO', defaultValue: 'https://github.com/thunder-ss14/corporate-war.git', description: 'Git repo (https или ssh)')
     string(name: 'SERVER_IP', defaultValue: '5.83.140.23', description: 'IP сервера = ID SSH credentials')
     string(name: 'PORT', defaultValue: '1212', description: 'Порт сервера')
+
     // server_config.toml
     string(name: 'SERVER_NAME', defaultValue: 'TRAIN TDM 3000 TICKETS NO RULES 24/7', description: 'Имя сервера')
     string(name: 'SERVER_DESC', defaultValue: 'DEATH MATCH', description: 'Описание (можно пустое)')
@@ -15,6 +16,18 @@ pipeline {
     booleanParam(name: 'LOBBYENABLED', defaultValue: true, description: '[game] lobbyenabled')
     string(name: 'AUTH_MODE', defaultValue: '1', description: '[auth] mode')
     string(name: 'HUB_TAGS', defaultValue: 'totalspace,economy', description: '[hub] tags')
+
+    string(name: 'MAX_PLAYERS', defaultValue: '64', description: '[game] maxplayers')
+    string(name: 'SOFT_MAX_PLAYERS', defaultValue: '64', description: '[game] soft_max_players (можно = MAX_PLAYERS)')
+
+    choice(name: 'DB_ENGINE', choices: ['sqlite','postgres'], description: '[database] engine')
+    string(name: 'PG_HOST', defaultValue: 'localhost', description: 'Postgres host')
+    string(name: 'PG_PORT', defaultValue: '5432', description: 'Postgres port')
+    string(name: 'PG_DB',   defaultValue: 'ss14', description: 'Postgres database')
+    string(name: 'PG_USER', defaultValue: '', description: 'Postgres user')
+    string(name: 'PG_PASS', defaultValue: '', description: 'Postgres password (или оставь пустым)')
+
+    booleanParam(name: 'FORCE_CONFIG', defaultValue: true, description: 'Перезаписывать server_config.toml при деплое')
   }
 
   environment {
@@ -89,7 +102,6 @@ else
   unzip -o "$ZIP_FILE" -d artifact/
   [ -f artifact/Robust.Server ] && chmod +x artifact/Robust.Server || true
 fi
-# имя бандла = ветка
 tar -C artifact -czf "ss14-server-${BRANCH}.tar.gz" .
 '''
         archiveArtifacts artifacts: "ss14-server-${BRANCH}.tar.gz", fingerprint: true
@@ -102,7 +114,9 @@ tar -C artifact -czf "ss14-server-${BRANCH}.tar.gz" .
           sh '''#!/usr/bin/env bash
 set -euo pipefail
 
-# /opt/<owner>/<repo>/<branch>
+# esc для TOML строк
+esc() { printf '%s' "$1" | sed -e 's/\\\\/\\\\\\\\/g' -e 's/"/\\\\\\"/g'; }
+
 repo_path="$(printf '%s' "${REPO}" | sed -E 's#(git@github.com:|https://github.com/)([^/]+/[^/.]+)(\\.git)?#\\2#')"
 owner="${repo_path%%/*}"
 repo="${repo_path##*/}"
@@ -113,13 +127,13 @@ PORT="${PORT}"
 
 ssh -o StrictHostKeyChecking=no "root@${SERVER_IP}" "mkdir -p \"${DEST}\""
 
-# бинарники без конфига
+# бинарники
 rsync -a --delete \
   --exclude 'server_config.toml' \
   --exclude 'data/' \
   -e "ssh -o StrictHostKeyChecking=no" artifact/ "root@${SERVER_IP}:${DEST}/"
 
-# firewall: ufw / firewalld / iptables
+# firewall
 if ssh -o StrictHostKeyChecking=no "root@${SERVER_IP}" "command -v ufw >/dev/null 2>&1"; then
   ssh -o StrictHostKeyChecking=no "root@${SERVER_IP}" "ufw allow ${PORT}/tcp || true; ufw allow ${PORT}/udp || true"
 elif ssh -o StrictHostKeyChecking=no "root@${SERVER_IP}" "command -v firewall-cmd >/dev/null 2>&1"; then
@@ -128,33 +142,77 @@ else
   ssh -o StrictHostKeyChecking=no "root@${SERVER_IP}" "iptables -I INPUT -p tcp --dport ${PORT} -j ACCEPT || true; iptables -I INPUT -p udp --dport ${PORT} -j ACCEPT || true"
 fi
 
-# server_config.toml из параметров
-tmpdir="$(mktemp -d)"
-cat >"$tmpdir/server_config.toml" <<EOF
+# server_config.toml (строго один движок БД)
+tmpdir="$(mktemp -d)"; cfg="$tmpdir/server_config.toml"
+
+SERVER_NAME_E="$(esc "$SERVER_NAME")"
+SERVER_DESC_E="$(esc "$SERVER_DESC")"
+HUB_TAGS_E="$(esc "$HUB_TAGS")"
+
+cat >"$cfg" <<EOF
 [net]
 tickrate = ${TICKRATE}
 port = ${PORT}
 
 [game]
-hostname = "${SERVER_NAME}"
-description = "${SERVER_DESC}"
+hostname = "${SERVER_NAME_E}"
+description = "${SERVER_DESC_E}"
 lobbyenabled = ${LOBBYENABLED}
+maxplayers = ${MAX_PLAYERS}
+soft_max_players = ${SOFT_MAX_PLAYERS}
 
 [auth]
 mode = ${AUTH_MODE}
 
 [hub]
 advertise = true
-tags = "${HUB_TAGS}"
+tags = "${HUB_TAGS_E}"
+desc = "${SERVER_DESC_E}"
 EOF
-# server_url если есть домен
+
 if [ -n "${SERVER_DOMAIN:-}" ]; then
-  echo "server_url = \\"ss14://${SERVER_DOMAIN}:${PORT}\\"" >> "$tmpdir/server_config.toml"
+  echo "server_url = \"ss14://${SERVER_DOMAIN}:${PORT}\"" >> "$cfg"
 fi
 
-# не перезатираем ручной конфиг
-if ! ssh -o StrictHostKeyChecking=no "root@${SERVER_IP}" "test -f ${DEST}/server_config.toml"; then
-  scp -o StrictHostKeyChecking=no "$tmpdir/server_config.toml" "root@${SERVER_IP}:${DEST}/server_config.toml"
+if [ "${DB_ENGINE}" = "postgres" ]; then
+  PG_HOST_E="$(esc "$PG_HOST")"
+  PG_DB_E="$(esc "$PG_DB")"
+  PG_USER_E="$(esc "$PG_USER")"
+  PG_PASS_E="$(esc "$PG_PASS")"
+  cat >>"$cfg" <<EOF
+[database]
+engine = "postgres"
+pg_host = "${PG_HOST_E}"
+pg_port = ${PG_PORT}
+pg_database = "${PG_DB_E}"
+pg_username = "${PG_USER_E}"
+pg_password = "${PG_PASS_E}"
+# SQLite (шаблон, отключён):
+# engine = "sqlite"
+# sqlite_dbpath = "preferences.db"
+EOF
+else
+  cat >>"$cfg" <<'EOF'
+[database]
+engine = "sqlite"
+sqlite_dbpath = "preferences.db"
+# Postgres (шаблон, отключён):
+# engine = "postgres"
+# pg_host = "localhost"
+# pg_port = 5432
+# pg_database = "ss14"
+# pg_username = "user"
+# pg_password = "pass"
+EOF
+fi
+
+# политика перезаписи
+if ${FORCE_CONFIG}; then
+  scp -o StrictHostKeyChecking=no "$cfg" "root@${SERVER_IP}:${DEST}/server_config.toml"
+else
+  if ! ssh -o StrictHostKeyChecking=no "root@${SERVER_IP}" "test -f ${DEST}/server_config.toml"; then
+    scp -o StrictHostKeyChecking=no "$cfg" "root@${SERVER_IP}:${DEST}/server_config.toml"
+  fi
 fi
 
 # systemd unit
