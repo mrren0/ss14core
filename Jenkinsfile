@@ -33,7 +33,6 @@ pipeline {
   environment {
     DOTNET_CLI_TELEMETRY_OPTOUT = '1'
     GIT_TERMINAL_PROMPT = '0'
-    // --- антиклин MSBuild/SDK ---
     MSBUILDDISABLENODEREUSE = '1'
     DOTNET_CLI_HOME = "${WORKSPACE}/.dotnet_home"
     MSBUILDDEBUGPATH = "${WORKSPACE}/msbuild-logs"
@@ -81,7 +80,6 @@ dotnet --info
 set -Eeuo pipefail
 export PATH="$PWD/.dotnet:$PATH"
 cd src
-# чистим кэши чтобы избежать странных падений воркеров
 dotnet nuget locals all --clear || true
 for i in 1 2 3; do
   stdbuf -oL -eL dotnet restore --no-cache && s=0 && break || s=$?
@@ -101,7 +99,6 @@ export PATH="$PWD/.dotnet:$PATH"
 cd src
 ( while true; do echo "[keepalive] $(date -Iseconds) build alive"; sleep 55; done ) & KA=$!
 trap 'kill $KA 2>/dev/null || true; dotnet build-server shutdown || true' EXIT
-# выключаем параллельность, shared compilation и Roslyn-серверы — меньше шансов на MSB4166
 stdbuf -oL -eL dotnet build Content.Packaging --configuration Release -v minimal -m:1 -p:UseSharedCompilation=false
 stdbuf -oL -eL dotnet run --project Content.Packaging server --hybrid-acz --platform linux-x64
 '''
@@ -140,7 +137,6 @@ tar -C artifact -czf "ss14-server-${BRANCH}.tar.gz" .
           sh '''#!/usr/bin/env bash
 set -Eeuo pipefail
 SSH_OPTS="-o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=120 -i \"$SSH_KEY\""
-
 if ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "dotnet --list-runtimes 2>/dev/null | grep -q '^Microsoft.NETCore.App 9\\.'"; then
   echo "dotnet 9 runtime: OK"
 else
@@ -171,7 +167,7 @@ fi
         withCredentials([sshUserPrivateKey(credentialsId: params.SSH_CREDENTIALS_ID, keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
           sh '''#!/usr/bin/env bash
 set -Eeuo pipefail
-SSH_OPTS="-o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=120 -i \"$SSH_KEY\""
+SSH_OPTS="-o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=120 -i \\"$SSH_KEY\\""
 esc() { printf '%s' "$1" | sed -e 's/\\\\/\\\\\\\\/g' -e 's/"/\\\\\\"/g'; }
 
 repo_path="$(printf '%s' "${REPO}" | sed -E 's#(git@github.com:|https://github.com/)([^/]+/[^/.]+)(\\.git)?#\\2#')"
@@ -247,15 +243,23 @@ if [ "${FORCE_CONFIG}" = "true" ] || ! ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" 
   scp $SSH_OPTS "$cfg" "${SSH_USER}@${SERVER_IP}:${DEST}/server_config.toml"
 fi
 
-# inject [game].desc
+# --- SAFE ВСТАВКА desc ВНУТРИ [game] (heredoc) ---
 SERVER_DESC_E="$(esc "$SERVER_DESC")"
-ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" /bin/bash -lc '
-  set -Eeuo pipefail
-  CFG="'"${DEST}"'/server_config.toml"
-  sudo sed -i -E "/^\\[game\\]/,/^\\[/{/^[[:space:]]*(desc|description)[[:space:]]*=.*/d}" "$CFG"
-  sudo sed -i -E "/^\\[game\\]$/a desc = \"'"${SERVER_DESC_E}"'\"" "$CFG"
-  sudo sed -i -E "/^BasePort[[:space:]]*=.*/d" "$CFG"
-'
+ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "DEST='${DEST}' SERVER_DESC_E='${SERVER_DESC_E}' bash -se" <<'EOS'
+set -Eeuo pipefail
+CFG="${DEST}/server_config.toml"
+DESC_VAL="$SERVER_DESC_E"
+
+# Удаляем любые desc/description только внутри [game]…следующей секции
+sudo sed -i -E '/^\[game\]/,/^\[/{/^[[:space:]]*(desc|description)[[:space:]]*=.*/d}' "$CFG"
+
+# Вставляем нашу строку сразу после заголовка [game]
+printf 'desc = "%s"\n' "$DESC_VAL" | sudo sed -i -e '/^\[game\]$/r /dev/stdin' "$CFG"
+
+# Чистим устаревший BasePort
+sudo sed -i -E '/^BasePort[[:space:]]*=.*/d' "$CFG"
+EOS
+# --- /SAFE ВСТАВКА ---
 
 # systemd unit
 unit_local="$tmpdir/${UNIT}"
@@ -300,9 +304,7 @@ ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" /bin/bash -lc '
   }
 
   post {
-    always {
-      archiveArtifacts artifacts: 'msbuild-logs/**', allowEmptyArchive: true
-    }
+    always { archiveArtifacts artifacts: 'msbuild-logs/**', allowEmptyArchive: true }
     success { echo '✅ Deploy completed.' }
     failure { echo '❌ Deploy failed.' }
   }
