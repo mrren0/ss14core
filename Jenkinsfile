@@ -80,9 +80,7 @@ cd src
 
 # keepalive для Jenkins
 ( while true; do echo "[keepalive] $(date -Iseconds) build alive"; sleep 55; done ) & KA=$!
-cleanup(){ kill $KA 2>/dev/null || true; }
-trap cleanup EXIT
-
+trap 'kill $KA 2>/dev/null || true' EXIT
 stdbuf -oL -eL dotnet build Content.Packaging --configuration Release -v minimal
 stdbuf -oL -eL dotnet run --project Content.Packaging server --hybrid-acz --platform linux-x64
 '''
@@ -122,7 +120,6 @@ set -Eeuo pipefail
 
 SSH_OPTS="-o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=120"
 
-# esc для TOML строк
 esc() { printf '%s' "$1" | sed -e 's/\\\\/\\\\\\\\/g' -e 's/"/\\\\\\"/g'; }
 
 repo_path="$(printf '%s' "${REPO}" | sed -E 's#(git@github.com:|https://github.com/)([^/]+/[^/.]+)(\\.git)?#\\2#')"
@@ -132,6 +129,7 @@ safe_branch="$(printf '%s' "${BRANCH}" | tr '/ ' '_' | tr -cd 'A-Za-z0-9._-')"
 
 DEST="/opt/${owner}/${repo}/${safe_branch}"
 PORT="${PORT}"
+PORT_NEXT=$((PORT+1))
 
 ssh $SSH_OPTS "root@${SERVER_IP}" "mkdir -p \"${DEST}\""
 
@@ -141,21 +139,18 @@ rsync -a --delete \
   --exclude 'data/' \
   -e "ssh $SSH_OPTS" artifact/ "root@${SERVER_IP}:${DEST}/"
 
-# firewall
+# firewall (порт и статус-порт = PORT+1)
 if ssh $SSH_OPTS "root@${SERVER_IP}" "command -v ufw >/dev/null 2>&1"; then
-  ssh $SSH_OPTS "root@${SERVER_IP}" "ufw allow ${PORT}/tcp || true; ufw allow ${PORT}/udp || true"
+  ssh $SSH_OPTS "root@${SERVER_IP}" "ufw allow ${PORT}/tcp || true; ufw allow ${PORT}/udp || true; ufw allow ${PORT_NEXT}/tcp || true; ufw allow ${PORT_NEXT}/udp || true"
 elif ssh $SSH_OPTS "root@${SERVER_IP}" "command -v firewall-cmd >/dev/null 2>&1"; then
-  ssh $SSH_OPTS "root@${SERVER_IP}" "firewall-cmd --permanent --add-port=${PORT}/tcp || true; firewall-cmd --permanent --add-port=${PORT}/udp || true; firewall-cmd --reload || true"
+  ssh $SSH_OPTS "root@${SERVER_IP}" "firewall-cmd --permanent --add-port=${PORT}/tcp || true; firewall-cmd --permanent --add-port=${PORT}/udp || true; firewall-cmd --permanent --add-port=${PORT_NEXT}/tcp || true; firewall-cmd --permanent --add-port=${PORT_NEXT}/udp || true; firewall-cmd --reload || true"
 else
-  ssh $SSH_OPTS "root@${SERVER_IP}" "iptables -I INPUT -p tcp --dport ${PORT} -j ACCEPT || true; iptables -I INPUT -p udp --dport ${PORT} -j ACCEPT || true"
+  ssh $SSH_OPTS "root@${SERVER_IP}" "iptables -I INPUT -p tcp --dport ${PORT} -j ACCEPT || true; iptables -I INPUT -p udp --dport ${PORT} -j ACCEPT || true; iptables -I INPUT -p tcp --dport ${PORT_NEXT} -j ACCEPT || true; iptables -I INPUT -p udp --dport ${PORT_NEXT} -j ACCEPT || true"
 fi
 
-# server_config.toml (строго один движок БД)
+# server_config.toml
 tmpdir="$(mktemp -d)"; cfg="$tmpdir/server_config.toml"
-
-SERVER_NAME_E="$(esc "$SERVER_NAME")"
-SERVER_DESC_E="$(esc "$SERVER_DESC")"
-HUB_TAGS_E="$(esc "$HUB_TAGS")"
+SERVER_NAME_E="$(esc "$SERVER_NAME")"; SERVER_DESC_E="$(esc "$SERVER_DESC")"; HUB_TAGS_E="$(esc "$HUB_TAGS")"
 
 cat >"$cfg" <<EOF
 [net]
@@ -183,10 +178,7 @@ if [ -n "${SERVER_DOMAIN:-}" ]; then
 fi
 
 if [ "${DB_ENGINE}" = "postgres" ]; then
-  PG_HOST_E="$(esc "$PG_HOST")"
-  PG_DB_E="$(esc "$PG_DB")"
-  PG_USER_E="$(esc "$PG_USER")"
-  PG_PASS_E="$(esc "$PG_PASS")"
+  PG_HOST_E="$(esc "$PG_HOST")"; PG_DB_E="$(esc "$PG_DB")"; PG_USER_E="$(esc "$PG_USER")"; PG_PASS_E="$(esc "$PG_PASS")"
   cat >>"$cfg" <<EOF
 [database]
 engine = "postgres"
@@ -215,7 +207,7 @@ EOF
 fi
 
 # политика перезаписи
-if ${FORCE_CONFIG}; then
+if [ "${FORCE_CONFIG}" = "true" ]; then
   scp $SSH_OPTS "$cfg" "root@${SERVER_IP}:${DEST}/server_config.toml"
 else
   if ! ssh $SSH_OPTS "root@${SERVER_IP}" "test -f ${DEST}/server_config.toml"; then
@@ -223,7 +215,7 @@ else
   fi
 fi
 
-# systemd unit
+# systemd unit с BasePort
 UNIT="ss14-${safe_branch}.service"
 cat >"$tmpdir/${UNIT}" <<EOF
 [Unit]
@@ -233,7 +225,7 @@ Wants=network-online.target
 
 [Service]
 WorkingDirectory=${DEST}
-ExecStart=${DEST}/Robust.Server --cfg ${DEST}/server_config.toml
+ExecStart=${DEST}/Robust.Server --cfg ${DEST}/server_config.toml --cvar BasePort=${PORT}
 Restart=always
 RestartSec=3
 Environment=DOTNET_TieredPGO=1
