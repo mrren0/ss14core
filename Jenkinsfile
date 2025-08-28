@@ -115,7 +115,6 @@ tar -C artifact -czf "ss14-server-${BRANCH}.tar.gz" .
         sshagent (credentials: [params.SERVER_IP]) {
           sh '''#!/usr/bin/env bash
 set -Eeuo pipefail
-
 SSH_OPTS="-o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=120"
 esc() { printf '%s' "$1" | sed -e 's/\\\\/\\\\\\\\/g' -e 's/"/\\\\\\"/g'; }
 
@@ -248,13 +247,6 @@ ssh $SSH_OPTS "root@${SERVER_IP}" "systemctl daemon-reload && systemctl enable $
 # проверка: слушается именно ${PORT}, иначе показать лог и упасть
 ssh $SSH_OPTS "root@${SERVER_IP}" "sleep 2; ss -lntup | grep -q ':${PORT}\\b' || { journalctl -u ${UNIT} -n 200 --no-pager; exit 1; } && systemctl status ${UNIT} --no-pager || true"
 '''
-        }
-      }
     }
-  }
-
-  post {
-    success { echo '✅ Deploy completed.' }
-    failure { echo '❌ Deploy failed.' }
   }
 }
