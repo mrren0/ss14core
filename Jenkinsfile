@@ -1,9 +1,9 @@
 pipeline {
-  agent any
+	agent any
   options { timestamps(); ansiColor('xterm'); durabilityHint('PERFORMANCE_OPTIMIZED'); timeout(time: 90, unit: 'MINUTES') }
 
   parameters {
-    string(name: 'BRANCH', defaultValue: 'master', description: 'Ветка деплоя')
+		string(name: 'BRANCH', defaultValue: 'master', description: 'Ветка деплоя')
     string(name: 'REPO', defaultValue: 'https://github.com/thunder-ss14/corporate-war.git', description: 'Git repo (https или ssh)')
     string(name: 'SERVER_IP', defaultValue: '162.19.232.192', description: 'IP адрес сервера')
     string(name: 'SSH_CREDENTIALS_ID', defaultValue: '162.19.232.192', description: 'ID SSH credentials в Jenkins')
@@ -31,7 +31,7 @@ pipeline {
   }
 
   environment {
-    DOTNET_CLI_TELEMETRY_OPTOUT = '1'
+		DOTNET_CLI_TELEMETRY_OPTOUT = '1'
     GIT_TERMINAL_PROMPT = '0'
     MSBUILDDISABLENODEREUSE = '1'
     DOTNET_CLI_HOME = "${WORKSPACE}/.dotnet_home"
@@ -39,10 +39,10 @@ pipeline {
   }
 
   stages {
-    stage('Checkout + Submodules') {
-      steps {
-        withCredentials([string(credentialsId: 'token-github', variable: 'GITHUB_TOKEN')]) {
-          sh '''#!/usr/bin/env bash
+		stage('Checkout + Submodules') {
+			steps {
+				withCredentials([string(credentialsId: 'token-github', variable: 'GITHUB_TOKEN')]) {
+					sh '''#!/usr/bin/env bash
 set -euo pipefail
 rm -rf src
 cat > askpass.sh <<'EOS'
@@ -62,8 +62,8 @@ git -C src config --local safe.directory "$(pwd)/src" || true
     }
 
     stage('.NET SDK (local)') {
-      steps {
-        sh '''#!/usr/bin/env bash
+			steps {
+				sh '''#!/usr/bin/env bash
 set -euo pipefail
 mkdir -p .dotnet "$DOTNET_CLI_HOME" "$MSBUILDDEBUGPATH"
 curl -fsSL --retry 8 --retry-all-errors --retry-delay 2 -o dotnet-install.sh https://dot.net/v1/dotnet-install.sh
@@ -75,8 +75,8 @@ dotnet --info
     }
 
     stage('Restore (retry)') {
-      steps {
-        sh '''#!/usr/bin/env bash
+			steps {
+				sh '''#!/usr/bin/env bash
 set -Eeuo pipefail
 export PATH="$PWD/.dotnet:$PATH"
 cd src
@@ -91,9 +91,9 @@ done
     }
 
     stage('Build & Package') {
-      steps {
-        retry(2) {
-          sh '''#!/usr/bin/env bash
+			steps {
+				retry(2) {
+					sh '''#!/usr/bin/env bash
 set -Eeuo pipefail
 export PATH="$PWD/.dotnet:$PATH"
 cd src
@@ -107,8 +107,8 @@ stdbuf -oL -eL dotnet run --project Content.Packaging server --hybrid-acz --plat
     }
 
     stage('Archive artifact') {
-      steps {
-        sh '''#!/usr/bin/env bash
+			steps {
+				sh '''#!/usr/bin/env bash
 set -euo pipefail
 rm -rf artifact
 mkdir -p artifact
@@ -132,9 +132,9 @@ tar -C artifact -czf "ss14-server-${BRANCH}.tar.gz" .
     }
 
     stage('Ensure .NET 9 runtime on target') {
-      steps {
-        withCredentials([sshUserPrivateKey(credentialsId: params.SSH_CREDENTIALS_ID, keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
-          sh '''#!/usr/bin/env bash
+			steps {
+				withCredentials([sshUserPrivateKey(credentialsId: params.SSH_CREDENTIALS_ID, keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
+					sh '''#!/usr/bin/env bash
 set -Eeuo pipefail
 SSH_OPTS="-o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=120 -i \"$SSH_KEY\""
 
@@ -164,9 +164,9 @@ fi
     }
 
     stage('Deploy via SSH') {
-      steps {
-        withCredentials([sshUserPrivateKey(credentialsId: params.SSH_CREDENTIALS_ID, keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
-          sh '''#!/usr/bin/env bash
+			steps {
+				withCredentials([sshUserPrivateKey(credentialsId: params.SSH_CREDENTIALS_ID, keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
+					sh '''#!/usr/bin/env bash
 set -Eeuo pipefail
 SSH_OPTS="-o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=120 -i \"$SSH_KEY\""
 esc() { printf '%s' "$1" | sed -e 's/\\\\/\\\\\\\\/g' -e 's/"/\\\\\\"/g'; }
@@ -276,12 +276,44 @@ ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "sudo mv /tmp/${UNIT} /etc/systemd/syst
 # check
 ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" /bin/bash -lc '
   set -e
+
+  # вывод подключений
+  echo "connect_ip: ss14://'"${SERVER_IP}"':'"${PORT}"'"
+  if [ -n "'"${SERVER_DOMAIN}"'" ]; then
+    echo "connect_domain: ss14://'"${SERVER_DOMAIN}"':'"${PORT}"'"
+  fi
+
+  # дать серверу ожить
   sleep 10
+
+  # сокет поднят?
   for i in {1..20}; do ss -lntup | grep -q ":'"${PORT}"'\\b" && ok=1 && break || sleep 1; done
   [ "${ok:-}" = "1" ] || { sudo journalctl -u '"${UNIT}"' -n 200 --no-pager; exit 1; }
+
   which jq >/dev/null 2>&1 || { sudo apt-get update -y && sudo apt-get install -y jq; }
-  DESC_OUT="$(curl -s http://127.0.0.1:'"${PORT}"'/info | jq -r .desc || true)"
+
+  # /info
+  INFO_JSON="$(curl -s http://127.0.0.1:'"${PORT}"'/info || true)"
+  DESC_OUT="$(printf '%s' "$INFO_JSON" | jq -r '.desc // empty' 2>/dev/null || true)"
+  ENGINE_OUT="$(printf '%s' "$INFO_JSON" | jq -r '.build.engine_version // empty' 2>/dev/null || true)"
+  BUILD_OUT="$(printf '%s' "$INFO_JSON" | jq -r '.build.version // empty' 2>/dev/null || true)"
+  ACZ_OUT="$(printf '%s' "$INFO_JSON" | jq -r '.build.acz // empty' 2>/dev/null || true)"
+
   echo "desc: ${DESC_OUT}"
+  [ -n "$ENGINE_OUT" ] && echo "engine: ${ENGINE_OUT}"
+  [ -n "$BUILD_OUT" ] && echo "build: ${BUILD_OUT}"
+  [ -n "$ACZ_OUT" ] && echo "acz: ${ACZ_OUT}"
+
+  echo "connect_ip: ss14://'"${SERVER_IP}"':'"${PORT}"'"
+  if [ -n "'"${SERVER_DOMAIN}"'" ]; then
+    echo "connect_domain: ss14://'"${SERVER_DOMAIN}"':'"${PORT}"'"
+  fi
+
+  echo "--- server_config.toml (masked) ---"
+  sed -e "s/^[[:space:]]*pg_password[[:space:]]*=.*/pg_password = \"***\"/" '"${DEST}"'/server_config.toml || true
+
+
+  # прежняя проверка без изменений
   test "${DESC_OUT}" = "'"${SERVER_DESC_E}"'" || { echo "❌ desc не применился"; exit 1; }
 '
 '''
