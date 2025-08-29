@@ -9,8 +9,8 @@ pipeline {
     string(name: 'SSH_CREDENTIALS_ID', defaultValue: '162.19.232.192', description: 'ID SSH credentials в Jenkins')
     string(name: 'PORT', defaultValue: '1212', description: 'Порт сервера')
 
-    string(name: 'SERVER_NAME', defaultValue: '[18+]TRAIN TDM 3000 TICKETS NO RULES 24/7', description: 'Имя сервера')
-    string(name: 'SERVER_DESC', defaultValue: 'DEATH MATCH', description: 'Описание (в /info)')
+    string(name: 'SERVER_NAME', defaultValue: 'THUNDER', description: 'Имя сервера')
+    string(name: 'SERVER_DESC', defaultValue: 'THUNDER', description: 'Описание (в /info)')
     string(name: 'SERVER_DOMAIN', defaultValue: 'thunderhub.online', description: 'Домен (для server_url)')
     string(name: 'TICKRATE', defaultValue: '60', description: '[net] tickrate')
     booleanParam(name: 'LOBBYENABLED', defaultValue: true, description: '[game] lobbyenabled')
@@ -23,9 +23,9 @@ pipeline {
     choice(name: 'DB_ENGINE', choices: ['sqlite','postgres'], description: '[database] engine')
     string(name: 'PG_HOST', defaultValue: '127.0.0.1', description: 'Postgres host')
     string(name: 'PG_PORT', defaultValue: '5432', description: 'Postgres port')
-    string(name: 'PG_DB',   defaultValue: 'ss14', description: 'Postgres database')
-    string(name: 'PG_USER', defaultValue: '', description: 'Postgres user')
-    string(name: 'PG_PASS', defaultValue: '', description: 'Postgres password (или пусто)')
+    string(name: 'PG_DB',   defaultValue: 'thunder', description: 'Postgres database')
+    string(name: 'PG_USER', defaultValue: 'thunder', description: 'Postgres user')
+    string(name: 'PG_PASS', defaultValue: 'thunder', description: 'Postgres password (или пусто)')
 
     booleanParam(name: 'FORCE_CONFIG', defaultValue: true, description: 'Перезаписывать server_config.toml при деплое')
   }
