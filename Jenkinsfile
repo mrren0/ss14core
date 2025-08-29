@@ -300,6 +300,8 @@ ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" /bin/bash -lc '
     sleep 5
   done
 
+  echo "INFO_JSON $INFO_JSON"
+
   DESC_OUT="$(printf '%s' "$INFO_JSON" | jq -r '.desc // empty' 2>/dev/null || true)"
   ENGINE_OUT="$(printf '%s' "$INFO_JSON" | jq -r '.build.engine_version // empty' 2>/dev/null || true)"
   BUILD_OUT="$(printf '%s' "$INFO_JSON" | jq -r '.build.version // empty' 2>/dev/null || true)"
