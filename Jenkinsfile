@@ -21,7 +21,7 @@ pipeline {
     string(name: 'SOFT_MAX_PLAYERS', defaultValue: '64', description: '[game] soft_max_players')
 
     choice(name: 'DB_ENGINE', choices: ['sqlite','postgres'], description: '[database] engine')
-    string(name: 'PG_HOST', defaultValue: 'localhost', description: 'Postgres host')
+    string(name: 'PG_HOST', defaultValue: '127.0.0.1', description: 'Postgres host')
     string(name: 'PG_PORT', defaultValue: '5432', description: 'Postgres port')
     string(name: 'PG_DB',   defaultValue: 'ss14', description: 'Postgres database')
     string(name: 'PG_USER', defaultValue: '', description: 'Postgres user')
