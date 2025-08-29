@@ -33,6 +33,7 @@ pipeline {
   environment {
     DOTNET_CLI_TELEMETRY_OPTOUT = '1'
     GIT_TERMINAL_PROMPT = '0'
+    // --- антиклин MSBuild/SDK ---
     MSBUILDDISABLENODEREUSE = '1'
     DOTNET_CLI_HOME = "${WORKSPACE}/.dotnet_home"
     MSBUILDDEBUGPATH = "${WORKSPACE}/msbuild-logs"
@@ -80,6 +81,7 @@ dotnet --info
 set -Eeuo pipefail
 export PATH="$PWD/.dotnet:$PATH"
 cd src
+# чистим кэши чтобы избежать странных падений воркеров
 dotnet nuget locals all --clear || true
 for i in 1 2 3; do
   stdbuf -oL -eL dotnet restore --no-cache && s=0 && break || s=$?
@@ -99,6 +101,7 @@ export PATH="$PWD/.dotnet:$PATH"
 cd src
 ( while true; do echo "[keepalive] $(date -Iseconds) build alive"; sleep 55; done ) & KA=$!
 trap 'kill $KA 2>/dev/null || true; dotnet build-server shutdown || true' EXIT
+# выключаем параллельность, shared compilation и Roslyn-серверы — меньше шансов на MSB4166
 stdbuf -oL -eL dotnet build Content.Packaging --configuration Release -v minimal -m:1 -p:UseSharedCompilation=false
 stdbuf -oL -eL dotnet run --project Content.Packaging server --hybrid-acz --platform linux-x64
 '''
@@ -137,6 +140,7 @@ tar -C artifact -czf "ss14-server-${BRANCH}.tar.gz" .
           sh '''#!/usr/bin/env bash
 set -Eeuo pipefail
 SSH_OPTS="-o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=120 -i \"$SSH_KEY\""
+
 if ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "dotnet --list-runtimes 2>/dev/null | grep -q '^Microsoft.NETCore.App 9\\.'"; then
   echo "dotnet 9 runtime: OK"
 else
@@ -167,7 +171,7 @@ fi
         withCredentials([sshUserPrivateKey(credentialsId: params.SSH_CREDENTIALS_ID, keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
           sh '''#!/usr/bin/env bash
 set -Eeuo pipefail
-SSH_OPTS="-o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=120 -i \\"$SSH_KEY\\""
+SSH_OPTS="-o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=120 -i \"$SSH_KEY\""
 esc() { printf '%s' "$1" | sed -e 's/\\\\/\\\\\\\\/g' -e 's/"/\\\\\\"/g'; }
 
 repo_path="$(printf '%s' "${REPO}" | sed -E 's#(git@github.com:|https://github.com/)([^/]+/[^/.]+)(\\.git)?#\\2#')"
@@ -243,32 +247,40 @@ if [ "${FORCE_CONFIG}" = "true" ] || ! ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" 
   scp $SSH_OPTS "$cfg" "${SSH_USER}@${SERVER_IP}:${DEST}/server_config.toml"
 fi
 
-# === ВСТАВКА desc БЕЗ sed-ловушек ===
+# inject [game].desc — без -E, совместимо с BusyBox/старым sed
 SERVER_DESC_E="$(esc "$SERVER_DESC")"
+ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" /bin/bash -lc '
+  set -Eeuo pipefail
+  CFG="'"${DEST}"'/server_config.toml"
 
-# готовим локально маленький патчер и заливаем на хост
-patch_local="$tmpdir/patch-desc.sh"
-cat >"$patch_local" <<'PATCH'
-#!/usr/bin/env bash
-set -Eeuo pipefail
-CFG="$1"
-DESC_VAL="$2"
-# Удалить desc/description ТОЛЬКО внутри [game], затем добавить нашу строку
-awk -v d="$DESC_VAL" '
-  BEGIN{ing=0; wrote=0}
-  /^\[game\]$/ { print; ing=1; next }
-  /^\[/ && ing { if(!wrote){ print "desc = \"" d "\"" } ; ing=0; wrote=1 }
-  { if(ing && $0 ~ /^[[:space:]]*(desc|description)[[:space:]]*=/) next; print }
-  END{ if(ing && !wrote) print "desc = \"" d "\"" }
-' "$CFG" > "$CFG.tmp"
-mv "$CFG.tmp" "$CFG"
-# Чистим устаревший BasePort
-sed -i -E '/^BasePort[[:space:]]*=.*/d' "$CFG"
-PATCH
+  # 1) Удалить существующие desc/description в секции [game]
+  tmp1=$(mktemp)
+  awk "
+    BEGIN{in_game=0}
+    /^\[game\]$/ {in_game=1; print; next}
+    /^\[/ {in_game=0}
+    {
+      if(in_game && \$0 ~ /^[[:space:]]*(desc|description)[[:space:]]*=/) next
+      print
+    }
+  " "$CFG" >"$tmp1"
+  mv "$tmp1" "$CFG"
 
-scp $SSH_OPTS "$patch_local" "${SSH_USER}@${SERVER_IP}:/tmp/patch-desc.sh"
-ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "sudo bash /tmp/patch-desc.sh '${DEST}/server_config.toml' '$(printf %s "$SERVER_DESC_E")'"
-# === /ВСТАВКА desc ===
+  # 2) Вставить desc сразу после [game]
+  tmp2=$(mktemp)
+  awk '"'"'
+    {
+      print
+      if ($0 ~ /^\[game\]$/) {
+        print "desc = \""'"${SERVER_DESC_E}"'"\""
+      }
+    }
+  '"'"' "$CFG" >"$tmp2"
+  mv "$tmp2" "$CFG"
+
+  # 3) Удалить устаревший BasePort (совместимый sed)
+  sed -i"" -e "/^BasePort[[:space:]]*=.*/d" "$CFG" || true
+'
 
 # systemd unit
 unit_local="$tmpdir/${UNIT}"
@@ -313,7 +325,9 @@ ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" /bin/bash -lc '
   }
 
   post {
-    always { archiveArtifacts artifacts: 'msbuild-logs/**', allowEmptyArchive: true }
+    always {
+      archiveArtifacts artifacts: 'msbuild-logs/**', allowEmptyArchive: true
+    }
     success { echo '✅ Deploy completed.' }
     failure { echo '❌ Deploy failed.' }
   }
