@@ -292,8 +292,14 @@ ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" /bin/bash -lc '
 
   which jq >/dev/null 2>&1 || { sudo apt-get update -y && sudo apt-get install -y jq; }
 
-  # /info
-  INFO_JSON="$(curl -s http://127.0.0.1:'"${PORT}"'/info || true)"
+  # /info summary (ждём до 60с)
+  INFO_JSON=""
+  for i in {1..30}; do
+    INFO_JSON="$(curl -s http://127.0.0.1:'"${PORT}"'/info || true)"
+    [ -n "$INFO_JSON" ] && break
+    sleep 5
+  done
+
   DESC_OUT="$(printf '%s' "$INFO_JSON" | jq -r '.desc // empty' 2>/dev/null || true)"
   ENGINE_OUT="$(printf '%s' "$INFO_JSON" | jq -r '.build.engine_version // empty' 2>/dev/null || true)"
   BUILD_OUT="$(printf '%s' "$INFO_JSON" | jq -r '.build.version // empty' 2>/dev/null || true)"
@@ -310,7 +316,7 @@ ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" /bin/bash -lc '
   fi
 
   echo "--- server_config.toml (masked) ---"
-  sed -e "s/^[[:space:]]*pg_password[[:space:]]*=.*/pg_password = \"***\"/" '"${DEST}"'/server_config.toml || true
+  sed "s/^[[:space:]]*pg_password[[:space:]]*=.*/pg_password = \"***\"/" '"${DEST}"'/server_config.toml || true
 
 
   # прежняя проверка без изменений
