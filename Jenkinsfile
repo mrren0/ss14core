@@ -276,7 +276,7 @@ ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "sudo mv /tmp/${UNIT} /etc/systemd/syst
 # check
 ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" /bin/bash -lc '
   set -e
-
+  sleep 10
   # вывод подключений
   echo "connect_ip: ss14://'"${SERVER_IP}"':'"${PORT}"'"
   if [ -n "'"${SERVER_DOMAIN}"'" ]; then
@@ -284,7 +284,7 @@ ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" /bin/bash -lc '
   fi
 
   # дать серверу ожить
-  sleep 10
+
 
   # сокет поднят?
   for i in {1..20}; do ss -lntup | grep -q ":'"${PORT}"'\\b" && ok=1 && break || sleep 1; done
