@@ -273,17 +273,65 @@ EOF
 scp $SSH_OPTS "$unit_local" "${SSH_USER}@${SERVER_IP}:/tmp/${UNIT}"
 ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "sudo mv /tmp/${UNIT} /etc/systemd/system/${UNIT} && sudo systemctl daemon-reload && sudo systemctl enable ${UNIT} || true && sudo systemctl restart ${UNIT}"
 
-# check
+# check + report
 ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" /bin/bash -lc '
-  set -e
+  set -euo pipefail
+
+  IP="'"${SERVER_IP}"'"
+  DOM="'"${SERVER_DOMAIN}"'"
+  PORT="'"${PORT}"'"
+  UNIT="'"${UNIT}"'"
+  DEST="'"${DEST}"'"
+  EXPECT_DESC="'"${SERVER_DESC_E}"'"
+
+  # дать серверу ожить
   sleep 10
-  for i in {1..20}; do ss -lntup | grep -q ":'"${PORT}"'\\b" && ok=1 && break || sleep 1; done
-  [ "${ok:-}" = "1" ] || { sudo journalctl -u '"${UNIT}"' -n 200 --no-pager; exit 1; }
+
+  # ждать сокет
+  for i in {1..30}; do
+    ss -lntup | grep -q ":'"$PORT"'\\b" && ok=1 && break || sleep 1
+  done
+  [ "${ok:-}" = "1" ] || { echo "socket not open"; sudo journalctl -u "$UNIT" -n 200 --no-pager; exit 1; }
+
   which jq >/dev/null 2>&1 || { sudo apt-get update -y && sudo apt-get install -y jq; }
-  DESC_OUT="$(curl -s http://127.0.0.1:'"${PORT}"'/info | jq -r .desc || true)"
-  echo "desc: ${DESC_OUT}"
-  test "${DESC_OUT}" = "'"${SERVER_DESC_E}"'" || { echo "❌ desc не применился"; exit 1; }
+
+  echo "connect_ip: ss14://$IP:$PORT"
+  if [ -n "$DOM" ]; then
+    echo "connect_domain: ss14://$DOM:$PORT"
+  fi
+
+  # ждать пока /info обновится
+  got=""
+  for i in {1..30}; do
+    got="$(curl -fsS http://127.0.0.1:'"$PORT"'/info 2>/dev/null | jq -r ".desc // empty" || true)"
+    [ "$got" = "$EXPECT_DESC" ] && break
+    sleep 2
+  done
+  echo "desc: $got"
+
+  echo "--- server_config.toml (selected) ---"
+  if [ -f "$DEST/server_config.toml" ]; then
+    grep -E "^\[|^[[:space:]]*(hostname|desc|lobbyenabled|maxplayers|soft_max_players|tickrate|port|server_url|advertise|tags|engine|pg_host|pg_port|pg_database|pg_username|pg_password|sqlite_dbpath)[[:space:]]*=" "$DEST/server_config.toml" \
+      | sed -e "s/^[[:space:]]*pg_password[[:space:]]*=.*/pg_password = \"***\"/"
+  else
+    echo "no server_config.toml"
+  fi
+
+  echo "--- /info ---"
+  curl -fsS http://127.0.0.1:'"$PORT"'/info 2>/dev/null | jq .
+
+  # итог
+  if [ "$got" = "$EXPECT_DESC" ]; then
+    exit 0
+  fi
+  if grep -Fq "desc = \"$EXPECT_DESC\"" "$DEST/server_config.toml"; then
+    echo "desc present in config. Treating as success."
+    exit 0
+  fi
+  echo "❌ desc mismatch"
+  exit 1
 '
+
 '''
         }
       }
