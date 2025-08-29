@@ -320,7 +320,7 @@ ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" /bin/bash -lc '
 
 
   # прежняя проверка без изменений
-  test "${DESC_OUT}" = "'"${SERVER_DESC_E}"'" || { echo "❌ desc не применился"; }
+  test "${DESC_OUT}" = "'"${SERVER_DESC_E}"'" || { echo "❌ desc не применился, потому что ${DESC_OUT} и ${SERVER_DESC_E}"; }
 '
 '''
         }
