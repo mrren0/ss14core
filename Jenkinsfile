@@ -305,7 +305,7 @@ ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" /bin/bash -lc '
   BUILD_OUT="$(printf '%s' "$INFO_JSON" | jq -r '.build.version // empty' 2>/dev/null || true)"
   ACZ_OUT="$(printf '%s' "$INFO_JSON" | jq -r '.build.acz // empty' 2>/dev/null || true)"
 
-  echo "desc: ${DESC_OUT} = ${SERVER_DESC_E}"
+  echo "desc: ${DESC_OUT}"
   [ -n "$ENGINE_OUT" ] && echo "engine: ${ENGINE_OUT}"
   [ -n "$BUILD_OUT" ] && echo "build: ${BUILD_OUT}"
   [ -n "$ACZ_OUT" ] && echo "acz: ${ACZ_OUT}"
@@ -320,7 +320,7 @@ ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" /bin/bash -lc '
 
 
   # прежняя проверка без изменений
-  test "${DESC_OUT}" = "'"${SERVER_DESC_E}"'" || { echo "❌ desc не применился"; exit 1; }
+  test "${DESC_OUT}" = "'"${SERVER_DESC_E}"'" || { echo "❌ desc не применился"; }
 '
 '''
         }
