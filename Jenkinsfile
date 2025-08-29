@@ -33,7 +33,6 @@ pipeline {
   environment {
     DOTNET_CLI_TELEMETRY_OPTOUT = '1'
     GIT_TERMINAL_PROMPT = '0'
-    // --- антиклин MSBuild/SDK ---
     MSBUILDDISABLENODEREUSE = '1'
     DOTNET_CLI_HOME = "${WORKSPACE}/.dotnet_home"
     MSBUILDDEBUGPATH = "${WORKSPACE}/msbuild-logs"
@@ -81,7 +80,6 @@ dotnet --info
 set -Eeuo pipefail
 export PATH="$PWD/.dotnet:$PATH"
 cd src
-# чистим кэши чтобы избежать странных падений воркеров
 dotnet nuget locals all --clear || true
 for i in 1 2 3; do
   stdbuf -oL -eL dotnet restore --no-cache && s=0 && break || s=$?
@@ -101,7 +99,6 @@ export PATH="$PWD/.dotnet:$PATH"
 cd src
 ( while true; do echo "[keepalive] $(date -Iseconds) build alive"; sleep 55; done ) & KA=$!
 trap 'kill $KA 2>/dev/null || true; dotnet build-server shutdown || true' EXIT
-# выключаем параллельность, shared compilation и Roslyn-серверы — меньше шансов на MSB4166
 stdbuf -oL -eL dotnet build Content.Packaging --configuration Release -v minimal -m:1 -p:UseSharedCompilation=false
 stdbuf -oL -eL dotnet run --project Content.Packaging server --hybrid-acz --platform linux-x64
 '''
@@ -194,9 +191,11 @@ fi
 # upload binaries
 rsync -a --delete --exclude 'server_config.toml' --exclude 'data/' -e "ssh $SSH_OPTS" artifact/ "${SSH_USER}@${SERVER_IP}:${DEST}/"
 
-# base config (without desc)
+# base config (включая desc)
 tmpdir="$(mktemp -d)"; cfg="$tmpdir/server_config.toml"
-SERVER_NAME_E="$(esc "$SERVER_NAME")"; HUB_TAGS_E="$(esc "$HUB_TAGS")"
+SERVER_NAME_E="$(esc "$SERVER_NAME")"
+SERVER_DESC_E="$(esc "$SERVER_DESC")"
+HUB_TAGS_E="$(esc "$HUB_TAGS")"
 
 cat >"$cfg" <<EOF
 [net]
@@ -205,6 +204,7 @@ port = ${PORT}
 
 [game]
 hostname = "${SERVER_NAME_E}"
+desc = "${SERVER_DESC_E}"
 lobbyenabled = ${LOBBYENABLED}
 maxplayers = ${MAX_PLAYERS}
 soft_max_players = ${SOFT_MAX_PLAYERS}
@@ -246,41 +246,6 @@ fi
 if [ "${FORCE_CONFIG}" = "true" ] || ! ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "test -f ${DEST}/server_config.toml"; then
   scp $SSH_OPTS "$cfg" "${SSH_USER}@${SERVER_IP}:${DEST}/server_config.toml"
 fi
-
-# inject [game].desc — без -E, совместимо с BusyBox/старым sed
-SERVER_DESC_E="$(esc "$SERVER_DESC")"
-ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" /bin/bash -lc '
-  set -Eeuo pipefail
-  CFG="'"${DEST}"'/server_config.toml"
-
-  # 1) Удалить существующие desc/description в секции [game]
-  tmp1=$(mktemp)
-  awk "
-    BEGIN{in_game=0}
-    /^\[game\]$/ {in_game=1; print; next}
-    /^\[/ {in_game=0}
-    {
-      if(in_game && \$0 ~ /^[[:space:]]*(desc|description)[[:space:]]*=/) next
-      print
-    }
-  " "$CFG" >"$tmp1"
-  mv "$tmp1" "$CFG"
-
-  # 2) Вставить desc сразу после [game]
-  tmp2=$(mktemp)
-  awk '"'"'
-    {
-      print
-      if ($0 ~ /^\[game\]$/) {
-        print "desc = \""'"${SERVER_DESC_E}"'"\""
-      }
-    }
-  '"'"' "$CFG" >"$tmp2"
-  mv "$tmp2" "$CFG"
-
-  # 3) Удалить устаревший BasePort (совместимый sed)
-  sed -i"" -e "/^BasePort[[:space:]]*=.*/d" "$CFG" || true
-'
 
 # systemd unit
 unit_local="$tmpdir/${UNIT}"
