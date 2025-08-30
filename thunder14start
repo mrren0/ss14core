@@ -32,17 +32,16 @@ pipeline {
           catchError(buildResult: 'SUCCESS', stageResult: 'SUCCESS') { unstash 'cfg_upload' }
           catchError(buildResult: 'SUCCESS', stageResult: 'SUCCESS') { unstash 'cfg_text' }
         }
-        withEnv(["CFG_FILE=${params.CFG_FILE ?: ''}"]) {
-          sh '''#!/usr/bin/env bash
+        // только имеющиеся параметры; без новых env
+        sh '''#!/usr/bin/env bash
 set -Ee -o pipefail   # без -u: CFG_FILE может быть пустым
 CFG=''
-[ -n "${CFG_FILE}" ] && [ -f "${CFG_FILE}" ] && CFG="${CFG_FILE}"
+[ -n "${CFG_FILE:-}" ] && [ -f "${CFG_FILE}" ] && CFG="${CFG_FILE}"
 [ -z "$CFG" ] && [ -f cfg_full.toml ] && CFG=cfg_full.toml
 [ -n "$CFG" ] || { echo "Нет TOML"; exit 2; }
 cp -f "$CFG" server_config.toml
 awk -F= '/^[[:space:]]*port[[:space:]]*=/{ sub(/#.*/,""); gsub(/[[:space:]]/,"",$2); if($2~/^[0-9]+$/){print $2; exit}}' server_config.toml > .port || true
 '''
-        }
       }
     }
 
@@ -60,22 +59,15 @@ cp -a . artifact/
     stage('Deploy') {
       steps {
         sshagent(credentials: [params.SSH_ID]) {
-          script {
-            def RUN_CMD_ESC = (params.RUN_CMD ?: '').replace('|','\\|')
-            withEnv([
-              "SSH_USER=${params.SSH_USER}",
-              "HOST_HOST=${params.SERVER_IP}",
-              "APP=${params.APP_DIR}",
-              "BR=${params.BRANCH}",
-              "REPO_NAME=${env.REPO_NAME}",
-              "RUN_CMD_ESC=${RUN_CMD_ESC}"
-            ]) {
-              sh '''#!/usr/bin/env bash
+          // без дополнительных withEnv: используем auto env от Jenkins (SERVER_IP, SSH_USER, APP_DIR, BRANCH, RUN_CMD, REPO_NAME)
+          sh '''#!/usr/bin/env bash
 set -Eeuo pipefail
 
 SSH='ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=30'
 SCP='scp -o StrictHostKeyChecking=no'
-HOST="$SSH_USER@$HOST_HOST"
+HOST="${SSH_USER}@${SERVER_IP}"
+APP="${APP_DIR}"
+BR="${BRANCH}"
 UNIT="ss14@${REPO_NAME}-${BR}.service"
 DEST="$APP/$BR"
 
@@ -117,7 +109,8 @@ U
 RS
 
 # подстановка команды запуска и reload юнитов
-$SSH "$HOST" "sudo sed -i \"s|EXEC_RUN_CMD|$RUN_CMD_ESC|\" /etc/systemd/system/ss14@.service && sudo systemctl daemon-reload"
+RUN_CMD_LOCAL="${RUN_CMD}"
+$SSH "$HOST" "sudo sed -i \"s|EXEC_RUN_CMD|${RUN_CMD_LOCAL//|/\\|}|\" /etc/systemd/system/ss14@.service && sudo systemctl daemon-reload"
 
 # порт из TOML
 if [ -f .port ]; then
@@ -128,8 +121,6 @@ fi
 # запуск
 $SSH "$HOST" "sudo systemctl restart $UNIT && systemctl is-active $UNIT --quiet && systemctl status $UNIT --no-pager | tail -n 20"
 '''
-            }
-          }
         }
       }
     }
