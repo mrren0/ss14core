@@ -1,0 +1,80 @@
+pipeline {
+  agent any
+  options { 
+    timestamps()
+    ansiColor('xterm')
+    durabilityHint('PERFORMANCE_OPTIMIZED')
+    timeout(time: 90, unit: 'MINUTES')
+  }
+
+  parameters {
+    string(name: 'BRANCH',     defaultValue: 'master', description: 'Ветка деплоя')
+    string(name: 'REPO',       defaultValue: 'https://github.com/thunder-ss14/corporate-war.git', description: 'Git repo')
+    string(name: 'SERVER_IP',  defaultValue: '162.19.232.192', description: 'IP адрес сервера')
+    string(name: 'SSH_USER',   defaultValue: 'ubuntu', description: 'SSH пользователь')
+    string(name: 'REMOTE_DIR', defaultValue: '/opt/thunder-ss14/corporate-war/master', description: 'Папка на сервере')
+    credentials(name: 'SSH_CRED', defaultValue: 'deploy-key', description: 'SSH private key credential ID')
+    text(name: 'SERVER_CONFIG', defaultValue: '', description: 'Полный server_config.toml')
+  }
+
+  stages {
+    stage('Checkout') {
+      steps {
+        git branch: params.BRANCH, url: params.REPO
+      }
+    }
+
+    stage('Build') {
+      steps {
+        sh '''
+          set -e
+          dotnet --version
+          dotnet restore
+          dotnet publish Content.Server -c Release -o build
+        '''
+        archiveArtifacts artifacts: 'build/**', fingerprint: true
+      }
+    }
+
+    stage('Prepare config') {
+      steps {
+        writeFile file: 'server_config.toml', text: params.SERVER_CONFIG
+        sh 'echo "=== server_config.toml ==="; head -n 30 server_config.toml'
+        archiveArtifacts artifacts: 'server_config.toml', fingerprint: true
+      }
+    }
+
+    stage('Deploy') {
+      steps {
+        sshagent(credentials: [params.SSH_CRED]) {
+          sh """
+            set -e
+            REMOTE="${params.SSH_USER}@${params.SERVER_IP}"
+            DEST_DIR="${params.REMOTE_DIR}/data"
+            BIN_DIR="${params.REMOTE_DIR}/bin"
+
+            ssh -o StrictHostKeyChecking=no "$REMOTE" "mkdir -p \${DEST_DIR} \${BIN_DIR}"
+            scp -o StrictHostKeyChecking=no -r build/* "$REMOTE:\${BIN_DIR}/"
+            scp -o StrictHostKeyChecking=no server_config.toml "$REMOTE:\${DEST_DIR}/server_config.toml"
+          """
+        }
+      }
+    }
+
+    stage('Restart service') {
+      steps {
+        sshagent(credentials: [params.SSH_CRED]) {
+          sh """
+            REMOTE="${params.SSH_USER}@${params.SERVER_IP}"
+            ssh -o StrictHostKeyChecking=no "$REMOTE" "sudo systemctl restart ss14@${params.BRANCH} || true; pgrep -af Content.Server || true"
+          """
+        }
+      }
+    }
+  }
+
+  post {
+    success { echo 'Deploy finished OK' }
+    failure { echo 'Deploy failed' }
+  }
+}
