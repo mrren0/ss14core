@@ -6,7 +6,65 @@ pipeline {
 string(name: 'BRANCH', defaultValue: 'master', description: 'Ветка деплоя')
 string(name: 'REPO', defaultValue: 'https://github.com/thunder-s...s14/corporate-war.git', description: 'Git repo (https или ssh)')
     string(name: 'TARGET', defaultValue: '162.19.232.192', description: 'IP/host; также credentialsId')
-    text(name: 'CFG_FULL', defaultValue: '', description: 'Полный config-server.toml')
+    text(name: 'CFG_FULL', defaultValue: '# Welcome to the example configuration file!
+                                          # Remember that if this is in bin/Content.Server or such, it may be overwritten on build.
+                                          # Consider copying it and using the --config-file and --data-dir options.
+                                          
+                                          [log]
+                                          path = "logs"
+                                          format = "log_%(date)s-%(time)s.txt"
+                                          level = 1
+                                          enabled = false
+                                          
+                                          [net]
+                                          tickrate = 60
+                                          port = 1212
+                                          bindto = "::,0.0.0.0"
+                                          max_connections = 256
+                                          # upnp = true
+                                          
+                                          [status]
+                                          enabled = true
+                                          bind = "*:1212"
+                                          # connectaddress = "udp://thunderhub.online:1212"
+                                          
+                                          [game]
+                                          hostname = "THUNDER"
+                                          desc = "THUNDER"
+                                          lobbyenabled = true
+                                          maxplayers = 64
+                                          soft_max_players = 64
+                                          
+                                          [console]
+                                          loginlocal = true
+                                          
+                                          [hub]
+                                          advertise = true
+                                          tags = "hardcore, economy"
+                                          server_url = "ss14://thunderhub.online:1212"
+                                          hub_urls = "https://hub.spacestation14.com/"
+                                          
+                                          [build]
+                                          # engine_version = "0.7.6"
+                                          # fork_id = "abacusstation"
+                                          # version = "Example1"
+                                          # download_url = "http://example.com/compass.zip"
+                                          # build = "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855"
+                                          
+                                          [auth]
+                                          # 0 = Optional, 1 = Required, 2 = Disabled
+                                          mode = 1
+                                          # allowlocal = true
+                                          # server = "https://auth.spacestation14.com/"
+                                          
+                                          [database]
+                                          engine = "postgres"
+                                          pg_host = "127.0.0.1"
+                                          pg_port = 5432
+                                          pg_database = "thunder"
+                                          pg_username = "rhunder"
+                                          pg_password = "thunder159753"
+', description: 'Полный config-server.toml')
 booleanParam(name: 'FORCE_CONFIG', defaultValue: true, description: 'Перезаписывать server_config.toml при деплое')
   }
 
