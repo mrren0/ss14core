@@ -76,17 +76,23 @@ cat inv.txt
           withEnv([
             "HOST_HOST=${params.SSH_CRED}",
             "ACT=${params.ACTION}",
-            "TARGET=${params.TARGET}"
+            "TARGET_PARAM=${params.TARGET}",
+            "TARGET_PICKED=${env.TARGET ?: ''}"
           ]) {
             sh '''#!/usr/bin/env bash
-set -Eeuo pipefail
+set -Eeo pipefail   # без -u, чтобы безопасно обработать пустые переменные
 HOST="$SSH_USER@$HOST_HOST"
-# если TARGET пришёл из предыдущего stage через env, он перекроет пустой параметр
-TARGET="${TARGET:-$TARGET}"
 
-ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$HOST" 'bash -se' <<'RS'
+# Собираем TARGET: приоритет параметру, иначе — выбранный на предыдущем шаге
+TARGET="${TARGET_PARAM-}"
+if [ -z "$TARGET" ]; then TARGET="${TARGET_PICKED-}"; fi
+[ -z "$TARGET" ] && { echo "TARGET пуст"; exit 2; }
+
+# Передаём ACT и TARGET на удалённый хост через env
+REMOTE_ENV=( ACT="$(printf %q "$ACT")" TARGET="$(printf %q "$TARGET")" )
+
+ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$HOST" "${REMOTE_ENV[@]}" 'bash -se' <<'RS'
 set -Eeuo pipefail
-TARGET='$TARGET'
 
 resolve_unit() {
   if [[ "$TARGET" == ss14@*.service ]]; then echo "$TARGET"; return 0; fi
@@ -112,7 +118,7 @@ resolve_unit() {
 UNIT="$(resolve_unit)"; [ -z "$UNIT" ] && { echo "Не смог определить UNIT из TARGET=$TARGET"; exit 3; }
 echo "UNIT: $UNIT"
 
-case '$ACT' in
+case "$ACT" in
   status)  systemctl status "$UNIT" --no-pager || true; journalctl -u "$UNIT" -n 100 --no-pager || true ;;
   stop)    systemctl stop "$UNIT" ;;
   start)   systemctl start "$UNIT"; systemctl is-active "$UNIT" ;;
