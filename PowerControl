@@ -1,10 +1,13 @@
 pipeline {
   agent any
   options { timestamps(); ansiColor('xterm'); timeout(time: 20, unit: 'MINUTES') }
+
   parameters {
     string(name: 'SERVER_IP', defaultValue: '162.19.232.192', description: 'Хост')
-    string(name: 'SSH_ID', defaultValue: '162.19.232.192', description: 'Jenkins SSH creds ID')
-    string(name: 'SSH_USER', defaultValue: 'ubuntu', description: 'SSH user')
+    credentials(name: 'SSH_CRED',
+      description: 'SSH credential (Username + Private Key)',
+      defaultValue: '162.19.232.192',
+      credentialType: 'com.cloudbees.jenkins.plugins.sshcredentials.impl.BasicSSHUserPrivateKey')
     choice(name: 'ACTION', choices: ['status','stop','start','restart'], description: 'Действие')
     string(name: 'TARGET', defaultValue: '', description: 'Опц.: ss14@... или :PORT или #TAG')
   }
@@ -12,11 +15,11 @@ pipeline {
   stages {
     stage('Inventory') {
       steps {
-        sshagent(credentials: [params.SSH_ID]) {
+        withCredentials([sshUserPrivateKey(credentialsId: params.SSH_CRED, keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
           sh """#!/usr/bin/env bash
 set -Eeuo pipefail
-HOST='${params.SSH_USER}@${params.SERVER_IP}'
-ssh -o StrictHostKeyChecking=no "\$HOST" 'bash -se' <<'RS' > inv.txt
+HOST="\${SSH_USER}@${params.SERVER_IP}"
+ssh -i "\$SSH_KEY" -o StrictHostKeyChecking=no "\$HOST" 'bash -se' <<'RS' > inv.txt
 set -Eeuo pipefail
 systemctl list-units 'ss14@*.service' --no-legend | awk '{print \$1}' | while read -r u; do
   pid=\$(systemctl show -p MainPID --value "\$u")
@@ -57,14 +60,14 @@ cat inv.txt
 
     stage('Action') {
       steps {
-        sshagent(credentials: [params.SSH_ID]) {
+        withCredentials([sshUserPrivateKey(credentialsId: params.SSH_CRED, keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
           sh """#!/usr/bin/env bash
 set -Eeuo pipefail
-HOST='${params.SSH_USER}@${params.SERVER_IP}'
+HOST="\${SSH_USER}@${params.SERVER_IP}"
 TARGET="${TARGET:-${params.TARGET}}"
 [ -z "\$TARGET" ] && { echo "TARGET пуст"; exit 2; }
 
-ssh -o StrictHostKeyChecking=no "\$HOST" 'bash -se' <<'RS'
+ssh -i "\$SSH_KEY" -o StrictHostKeyChecking=no "\$HOST" 'bash -se' <<'RS'
 set -Eeuo pipefail
 TARGET='$TARGET'
 
