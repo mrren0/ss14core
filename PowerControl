@@ -1,0 +1,97 @@
+pipeline {
+  agent any
+  options { timestamps(); ansiColor('xterm'); timeout(time: 20, unit: 'MINUTES') }
+  parameters {
+    string(name: 'SERVER_IP', defaultValue: '162.19.232.192', description: 'Хост')
+    string(name: 'SSH_ID', defaultValue: '162.19.232.192', description: 'Jenkins SSH creds ID')
+    string(name: 'SSH_USER', defaultValue: 'ubuntu', description: 'SSH user')
+    choice(name: 'ACTION', choices: ['status','stop','start','restart'], description: 'Действие')
+    string(name: 'TARGET', defaultValue: '', description: 'Опц.: ss14@... или :PORT или #TAG')
+  }
+  stages {
+    stage('Inventory') {
+      steps {
+        sshagent(credentials: [params.SSH_ID]) {
+          sh """#!/usr/bin/env bash
+set -Eeuo pipefail
+ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.SERVER_IP} 'bash -se' <<'RS' > inv.txt
+set -Eeuo pipefail
+systemctl list-units 'ss14@*.service' --no-legend | awk '{print $1}' | while read -r u; do
+  pid=\$(systemctl show -p MainPID --value "\$u")
+  state=\$(systemctl is-active "\$u" || true)
+  cwd=""; base=""; repo=""; br=""; port=""; tag=""
+  if [[ "\$pid" =~ ^[0-9]+\$ ]] && [ -e "/proc/\$pid/cwd" ]; then cwd=\$(readlink -f /proc/\$pid/cwd 2>/dev/null || true); fi
+  [[ "\$cwd" == /opt/thunder-ss14/*/current ]] && base=\${cwd%/current} || true
+  br=\${base##*/}; repo=\${base%/*}; repo=\${repo##*/}
+  [ -f "\$base/.env" ] && port=\$(grep -E '^PORT=' "\$base/.env"|cut -d= -f2-) || true
+  [ -f "\$base/.env" ] && tag=\$(grep -E '^INSTANCE_TAG=' "\$base/.env"|cut -d= -f2-) || true
+  echo "\$u|\$state|repo=\$repo|branch=\$br|port=\$port|tag=\$tag"
+done
+RS
+cat inv.txt
+"""
+        }
+      }
+    }
+    stage('Pick target') {
+      when { expression { params.TARGET?.trim() == '' } }
+      steps {
+        script {
+          def lines = readFile('inv.txt').trim().split('\\n').findAll{ it }
+          if (lines.isEmpty()) error 'Нет инстансов'
+          def choices = lines.collect { ln ->
+            def unit = ln.tokenize('|')[0]; def state = ln.tokenize('|')[1]
+            def port = (ln =~ /port=([^|]+)/) ? (ln =~ /port=([^|]+)/)[0][1] : ''
+            def tag  = (ln =~ /tag=([^|]+)/)  ? (ln =~ /tag=([^|]+)/)[0][1]  : ''
+            "${unit}  [${state}]  :${port}  #${tag}"
+          }
+          def picked = input message: 'Выбери сервер', parameters: [choice(name: 'UNIT', choices: choices.join('\n'))]
+          env.TARGET = picked.split('\\s\\s')[0]
+        }
+      }
+    }
+    stage('Action') {
+      steps {
+        sshagent(credentials: [params.SSH_ID]) {
+          sh """#!/usr/bin/env bash
+set -Eeuo pipefail
+TARGET="${TARGET:-${params.TARGET}}"; [ -z "$TARGET" ] && { echo "TARGET пуст"; exit 2; }
+read -r -d '' RESOLVE <<'BASH'
+resolve_unit() {
+  case "$TARGET" in
+    ss14@*.service) echo "$TARGET"; return 0;;
+    :*)  P="\${TARGET#:}"; systemctl list-units 'ss14@*.service' --no-legend|awk '{print $1}'|while read -r u; do
+           pid=\$(systemctl show -p MainPID --value "\$u"); [ -z "\$pid" ] && continue
+           cwd=\$(readlink -f /proc/\$pid/cwd 2>/dev/null || true); base=\${cwd%/current}
+           [ -f "\$base/.env" ] && PORT=\$(grep -E '^PORT=' "\$base/.env"|cut -d= -f2-)
+           [ "\$PORT" = "\$P" ] && echo "\$u"
+         done; return 0;;
+    \#*) T="\${TARGET#\\#}"; systemctl list-units 'ss14@*.service' --no-legend|awk '{print $1}'|while read -r u; do
+           pid=\$(systemctl show -p MainPID --value "\$u"); [ -z "\$pid" ] && continue
+           cwd=\$(readlink -f /proc/\$pid/cwd 2>/dev/null || true); base=\${cwd%/current}
+           [ -f "\$base/.env" ] && TAG=\$(grep -E '^INSTANCE_TAG=' "\$base/.env"|cut -d= -f2-)
+           [ "\$TAG" = "\$T" ] && echo "\$u"
+         done; return 0;;
+    *) echo ""; return 1;;
+  esac
+}
+BASH
+ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.SERVER_IP} 'bash -se' <<RS
+set -Eeuo pipefail
+TARGET='$TARGET'
+${RESOLVE}
+UNIT="\$(resolve_unit)"; [ -z "\$UNIT" ] && { echo "Не смог определить UNIT из TARGET=$TARGET"; exit 3; }
+echo "UNIT: \$UNIT"
+case '${params.ACTION}' in
+  status)  systemctl status "\$UNIT" --no-pager || true; journalctl -u "\$UNIT" -n 100 --no-pager || true ;;
+  stop)    systemctl stop "\$UNIT" ;;
+  start)   systemctl start "\$UNIT"; systemctl is-active "\$UNIT" ;;
+  restart) systemctl restart "\$UNIT"; systemctl is-active "\$UNIT" ;;
+esac
+RS
+"""
+        }
+      }
+    }
+  }
+}
