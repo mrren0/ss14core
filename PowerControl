@@ -69,36 +69,33 @@ set -Eeuo pipefail
 TARGET='$TARGET'
 
 resolve_unit() {
-  case "\$TARGET" in
-    ss14@*.service)
-      echo "\$TARGET"
-      return 0
-      ;;
-    :*)
-      P="\${TARGET#:}"
-      systemctl list-units 'ss14@*.service' --no-legend | awk '{print \$1}' | while read -r u; do
-        pid=\$(systemctl show -p MainPID --value "\$u"); [ -z "\$pid" ] && continue
-        cwd=\$(readlink -f /proc/\$pid/cwd 2>/dev/null || true); base=\${cwd%/current}
-        [ -f "\$base/.env" ] && PORT=\$(grep -E '^PORT=' "\$base/.env" | cut -d= -f2-)
-        [ "\$PORT" = "\$P" ] && echo "\$u"
-      done
-      return 0
-      ;;
-    #*)
-      T="\${TARGET#\#}"
-      systemctl list-units 'ss14@*.service' --no-legend | awk '{print \$1}' | while read -r u; do
-        pid=\$(systemctl show -p MainPID --value "\$u"); [ -z "\$pid" ] && continue
-        cwd=\$(readlink -f /proc/\$pid/cwd 2>/dev/null || true); base=\${cwd%/current}
-        [ -f "\$base/.env" ] && TAG=\$(grep -E '^INSTANCE_TAG=' "\$base/.env" | cut -d= -f2-)
-        [ "\$TAG" = "\$T" ] && echo "\$u"
-      done
-      return 0
-      ;;
-    *)
-      echo ""
-      return 1
-      ;;
-  esac
+  # ss14@unit
+  if [[ "\$TARGET" == ss14@*.service ]]; then
+    echo "\$TARGET"; return 0
+  fi
+  # :PORT
+  if [ "\${TARGET:0:1}" = ":" ]; then
+    P="\${TARGET:1}"
+    systemctl list-units 'ss14@*.service' --no-legend | awk '{print \$1}' | while read -r u; do
+      pid=\$(systemctl show -p MainPID --value "\$u"); [ -z "\$pid" ] && continue
+      cwd=\$(readlink -f "/proc/\$pid/cwd" 2>/dev/null || true); base=\${cwd%/current}
+      [ -f "\$base/.env" ] && PORT=\$(grep -E '^PORT=' "\$base/.env" | cut -d= -f2-)
+      [ "\$PORT" = "\$P" ] && echo "\$u"
+    done
+    return 0
+  fi
+  # #TAG
+  if [ "\${TARGET:0:1}" = "#" ]; then
+    T="\${TARGET:1}"
+    systemctl list-units 'ss14@*.service' --no-legend | awk '{print \$1}' | while read -r u; do
+      pid=\$(systemctl show -p MainPID --value "\$u"); [ -z "\$pid" ] && continue
+      cwd=\$(readlink -f "/proc/\$pid/cwd" 2>/dev/null || true); base=\${cwd%/current}
+      [ -f "\$base/.env" ] && TAG=\$(grep -E '^INSTANCE_TAG=' "\$base/.env" | cut -d= -f2-)
+      [ "\$TAG" = "\$T" ] && echo "\$u"
+    done
+    return 0
+  fi
+  echo ""; return 1
 }
 
 UNIT="\$(resolve_unit)"; [ -z "\$UNIT" ] && { echo "Не смог определить UNIT из TARGET=\$TARGET"; exit 3; }
