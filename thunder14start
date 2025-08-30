@@ -1,189 +1,115 @@
 pipeline {
   agent any
-  options { timestamps(); ansiColor('xterm'); durabilityHint('PERFORMANCE_OPTIMIZED'); timeout(time: 90, unit: 'MINUTES') }
-
+  options { timestamps(); ansiColor('xterm'); timeout(time: 30, unit: 'MINUTES') }
   parameters {
-    string(name: 'BRANCH', defaultValue: 'master', description: 'Ветка деплоя')
-    string(name: 'REPO',   defaultValue: 'https://github.com/thunder-ss14/corporate-war.git', description: 'Git repo (https или ssh)')
-    string(name: 'TARGET', defaultValue: '162.19.232.192', description: 'IP/host; также credentialsId')
-    file  (name: 'CFG_FILE', description: 'Загрузи config-server.toml')
-    text  (name: 'CFG_FULL', defaultValue: '', description: 'Альтернатива: вставь целиком TOML')
-    booleanParam(name: 'FORCE_CONFIG', defaultValue: true, description: 'Перезаписывать server_config.toml')
-  }
+    string(name: 'SERVER_IP', defaultValue: '162.19.232.192', description: 'Хост')
+    string(name: 'SSH_ID', defaultValue: '162.19.232.192', description: 'Jenkins SSH creds ID')
+    string(name: 'SSH_USER', defaultValue: 'ubuntu', description: 'SSH user')
 
-  environment {
-    DOTNET_CLI_TELEMETRY_OPTOUT = '1'
-    GIT_TERMINAL_PROMPT = '0'
-    MSBUILDDISABLENODEREUSE = '1'
-    DOTNET_CLI_HOME = "${WORKSPACE}/.dotnet_home"
-    MSBUILDDEBUGPATH = "${WORKSPACE}/msbuild-logs"
+    string(name: 'APP_DIR', defaultValue: '/opt/thunder-ss14/corporate-war', description: 'База приложения')
+    string(name: 'BRANCH',  defaultValue: 'master', description: 'Имя инстанса/ветки')
+    string(name: 'RUN_CMD', defaultValue: "exec ./run.sh --data-dir ../data", description: 'ExecStart')
+
+    string(name: 'REPO',   defaultValue: 'https://github.com/thunder-ss14/corporate-war.git', description: 'Репозиторий')
+    string(name: 'SRC_BRANCH', defaultValue: 'master', description: 'Ветка для сборки')
+
+    string(name: 'CFG_FILE', defaultValue: '', description: 'server_config.toml, путь в воркспейсе')
+    text  (name: 'CFG_FULL', defaultValue: '', description: 'или вставь полный TOML сюда')
   }
+  environment { REPO_NAME = "${params.REPO}".replaceAll('.*/','').replaceAll(/\\.git$/,'') }
 
   stages {
-    stage('Checkout + Submodules') {
-      steps {
-        withCredentials([string(credentialsId: 'token-github', variable: 'GITHUB_TOKEN')]) {
-          sh '''#!/usr/bin/env bash
-set -euo pipefail
-rm -rf src
-cat > askpass.sh <<'EOS'
-#!/bin/sh
-case "$1" in
-  *Username*) echo "x-access-token" ;;
-  *Password*) echo "$GITHUB_TOKEN" ;;
-esac
-EOS
-chmod +x askpass.sh
-GIT_ASKPASS="$PWD/askpass.sh" git clone --recursive https://github.com/thunder-ss14/corporate-war src
-cd src
-git checkout "${BRANCH}"
-git submodule sync --recursive
-GIT_ASKPASS="$PWD/../askpass.sh" git -c protocol.version=2 submodule update --init --recursive
-'''
-        }
-      }
-    }
-
-    stage('.NET SDK (local)') {
-      steps {
-        sh '''#!/usr/bin/env bash
-set -euo pipefail
-mkdir -p .dotnet "$DOTNET_CLI_HOME" "$MSBUILDDEBUGPATH"
-curl -fsSL --retry 8 --retry-all-errors --retry-delay 2 -o dotnet-install.sh https://dot.net/v1/dotnet-install.sh
-bash dotnet-install.sh --install-dir "$PWD/.dotnet" --channel 9.0
-export PATH="$PWD/.dotnet:$PATH"
-dotnet --info
-'''
-      }
-    }
-
-    stage('Restore (retry)') {
-      steps {
-        sh '''#!/usr/bin/env bash
-set -Eeuo pipefail
-export PATH="$PWD/.dotnet:$PATH"
-cd src
-dotnet nuget locals all --clear || true
-for i in 1 2 3; do
-  stdbuf -oL -eL dotnet restore --no-cache && s=0 && break || s=$?
-  echo "restore retry $i failed with $s"; sleep $((5*i))
-done
-[ "${s:-0}" -eq 0 ]
-'''
-      }
-    }
-
-    stage('Build & Package') {
-      steps {
-        retry(2) {
-          sh '''#!/usr/bin/env bash
-set -Eeuo pipefail
-export PATH="$PWD/.dotnet:$PATH"
-cd src
-( while true; do echo "[keepalive] $(date -Iseconds) build alive"; sleep 55; done ) & KA=$!
-trap 'kill $KA 2>/dev/null || true; dotnet build-server shutdown || true' EXIT
-stdbuf -oL -eL dotnet publish Content.Server -c Release -o ../artifact
-test -x ../artifact/Robust.Server
-'''
-        }
-      }
-    }
-
-    stage('Deploy via SSH') {
+    stage('Take config') {
       steps {
         script {
-          if (params.CFG_FULL?.trim()) { writeFile file: 'cfg_full.toml', text: params.CFG_FULL }
+          if (params.CFG_FILE?.trim()) { stash name: 'cfg_upload', includes: "${params.CFG_FILE}" }
+          if (params.CFG_FULL?.trim())  { writeFile file: 'cfg_full.toml', text: params.CFG_FULL; stash name: 'cfg_text', includes: 'cfg_full.toml' }
         }
-        withCredentials([sshUserPrivateKey(credentialsId: params.TARGET, keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
-          sh '''#!/usr/bin/env bash
+        script {
+          catchError(buildResult: 'SUCCESS', stageResult: 'SUCCESS') { unstash 'cfg_upload' }
+          catchError(buildResult: 'SUCCESS', stageResult: 'SUCCESS') { unstash 'cfg_text' }
+        }
+        sh """#!/usr/bin/env bash
 set -Eeuo pipefail
-: "${CFG_FILE:=}"
-SSH_OPTS="-o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=120 -i \"$SSH_KEY\""
-esc() { printf '%s' "$1" | sed -e 's/\\\\/\\\\\\\\/g' -e 's/"/\\\\\\"/g'; }
+CFG=''; [ -n "${CFG_FILE}" ] && [ -f "${CFG_FILE}" ] && CFG="${CFG_FILE}"
+[ -z "$CFG" ] && [ -f cfg_full.toml ] && CFG=cfg_full.toml
+[ -n "$CFG" ] || { echo "Нет TOML"; exit 2; }
+cp -f "$CFG" server_config.toml
+awk -F= '/^[[:space:]]*port[[:space:]]*=/{ sub(/#.*/,""); gsub(/[[:space:]]/,"",$2); if(\$2~/^[0-9]+$/){print \$2; exit}}' server_config.toml > .port || true
+"""
+      }
+    }
 
-# выбрать источник конфига: файл > CFG_FULL
-CFG_SRC=""
-if [ -n "$CFG_FILE" ]; then
-  [ -f "$WORKSPACE/$CFG_FILE" ] && CFG_SRC="$WORKSPACE/$CFG_FILE"
-  [ -z "$CFG_SRC" ] && [ -f "$CFG_FILE" ] && CFG_SRC="$CFG_FILE"
-fi
-[ -z "$CFG_SRC" ] && [ -f "$WORKSPACE/cfg_full.toml" ] && CFG_SRC="$WORKSPACE/cfg_full.toml"
-if [ -z "$CFG_SRC" ]; then
-  echo "No config provided: upload CFG_FILE or fill CFG_FULL" >&2
-  exit 2
-fi
+    stage('Checkout & Build') {
+      steps {
+        checkout([$class: 'GitSCM', branches: [[name: params.SRC_BRANCH]], userRemoteConfigs: [[url: params.REPO]]])
+        sh """#!/usr/bin/env bash
+set -Eeuo pipefail
+mkdir -p artifact
+cp -a . artifact/
+"""
+      }
+    }
 
-# порт из выбранного конфига
-PORT_FROM_CFG="$(awk -F= '/^[[:space:]]*port[[:space:]]*=/{ sub(/#.*/,""); gsub(/[[:space:]]/,"",$2); print $2; exit }' "$CFG_SRC")"
-: "${PORT:=${PORT_FROM_CFG:-1212}}"
+    stage('Deploy') {
+      steps {
+        sshagent(credentials: [params.SSH_ID]) {
+          sh """#!/usr/bin/env bash
+set -Eeuo pipefail
+SSH='ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=30'
+SCP='scp -o StrictHostKeyChecking=no'
+HOST='${params.SSH_USER}@${params.SERVER_IP}'
+APP='${params.APP_DIR}'
+BR='${params.BRANCH}'
+UNIT="ss14@${REPO_NAME}-${BR}.service"
+DEST="\$APP/\$BR"
 
-repo_path="$(printf '%s' "${REPO}" | sed -E 's#(git@github.com:|https://github.com/)([^/]+)/([^/.]+)(\\.git)?#\\2/\\3#')"
-owner="${repo_path%/*}"
-repo="${repo_path##*/}"
-safe_branch="$(printf '%s' "${BRANCH}" | tr -c 'a-zA-Z0-9._-' '_')"
-DEST="/opt/${owner}/${repo}/${safe_branch}"
-UNIT="ss14@${safe_branch}.service"
+# директории
+\$SSH \$HOST "sudo mkdir -p \$APP/\$BR/{current,data,logs} && sudo chown -R ${params.SSH_USER}:${params.SSH_USER} \$APP"
 
-# ensure dest
-ssh $SSH_OPTS "${SSH_USER}@${TARGET}" "sudo mkdir -p '${DEST}' '${DEST}/logs' '${DEST}/data' && sudo chown -R ${SSH_USER}:${SSH_USER} '${DEST}'"
+# артефакты
+rsync -a --delete --exclude 'server_config.toml' -e "ssh -o StrictHostKeyChecking=no" artifact/ "\$HOST:\$DEST/current/"
 
-# firewall
-if ssh $SSH_OPTS "${SSH_USER}@${TARGET}" "command -v ufw >/dev/null 2>&1"; then
-  ssh $SSH_OPTS "${SSH_USER}@${TARGET}" "sudo ufw allow ${PORT}/tcp || true; sudo ufw allow ${PORT}/udp || true"
-elif ssh $SSH_OPTS "${SSH_USER}@${TARGET}" "command -v firewall-cmd >/dev/null 2>&1"; then
-  ssh $SSH_OPTS "${SSH_USER}@${TARGET}" "sudo firewall-cmd --permanent --add-port=${PORT}/tcp || true; sudo firewall-cmd --permanent --add-port=${PORT}/udp || true; sudo firewall-cmd --reload || true"
-else
-  ssh $SSH_OPTS "${SSH_USER}@${TARGET}" "sudo iptables -I INPUT -p tcp --dport ${PORT} -j ACCEPT || true; sudo iptables -I INPUT -p udp --dport ${PORT} -j ACCEPT || true"
-fi
+# конфиг
+\$SCP server_config.toml "\$HOST:\$DEST/server_config.toml.tmp"
+\$SSH \$HOST "mv -f \$DEST/server_config.toml.tmp \$DEST/server_config.toml"
 
-# upload binaries
-rsync -a --delete --exclude 'server_config.toml' --exclude 'data' -e "ssh $SSH_OPTS" artifact/ "${SSH_USER}@${TARGET}:${DEST}/"
-
-# config
-tmpdir="$(mktemp -d)"; cfg="$tmpdir/server_config.toml"
-cp "$CFG_SRC" "$cfg"
-
-# systemd unit
-unit_local="$tmpdir/${UNIT}"
-cat >"$unit_local" <<EOF
+# systemd шаблон
+\$SSH \$HOST "sudo bash -se" <<'RS'
+set -Eeuo pipefail
+UNIT_FILE='/etc/systemd/system/ss14@.service'
+cat >"\$UNIT_FILE" <<'U'
 [Unit]
-Description=SS14 ${safe_branch} server
-After=network-online.target
-Wants=network-online.target
+Description=SS14 (%i)
+After=network.target
 
 [Service]
-User=${SSH_USER}
-Group=${SSH_USER}
-WorkingDirectory=${DEST}
-ExecStart=${DEST}/Robust.Server
-Restart=always
-RestartSec=3
-StandardOutput=append:${DEST}/logs/server.log
-StandardError=append:${DEST}/logs/server.err
+WorkingDirectory=/opt/thunder-ss14/corporate-war/%i/current
+ExecStart=/usr/bin/bash -lc 'EXEC_RUN_CMD'
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGINT
+TimeoutStopSec=45
+User=ubuntu
+Group=ubuntu
+LimitNOFILE=65535
+StandardOutput=append:/opt/thunder-ss14/corporate-war/%i/logs/server.log
+StandardError=append:/opt/thunder-ss14/corporate-war/%i/logs/server.err
 
 [Install]
 WantedBy=multi-user.target
-EOF
+U
+RS
+\$SSH \$HOST "sudo sed -i \"s|EXEC_RUN_CMD|${params.RUN_CMD//|/\\|}|\" /etc/systemd/system/ss14@.service && sudo systemctl daemon-reload"
 
-# push config + unit
-if [ "${FORCE_CONFIG:-true}" = "true" ]; then
-  rsync -a -e "ssh $SSH_OPTS" "$cfg" "${SSH_USER}@${TARGET}:${DEST}/server_config.toml"
-fi
-scp $SSH_OPTS "$unit_local" "${SSH_USER}@${TARGET}:/tmp/${UNIT}"
-ssh $SSH_OPTS "${SSH_USER}@${TARGET}" "sudo mv /tmp/${UNIT} /etc/systemd/system/${UNIT}"
+# порт из TOML
+if [ -f .port ]; then PORT=\$(cat .port); \$SSH \$HOST "sudo ufw allow \$PORT/tcp || true; sudo ufw allow \$PORT/udp || true || true"; fi
 
-# enable + restart
-ssh $SSH_OPTS "${SSH_USER}@${TARGET}" "sudo systemctl daemon-reload && sudo systemctl enable ${UNIT} --now && sudo systemctl restart ${UNIT} && systemctl status ${UNIT} --no-pager || true"
-ssh $SSH_OPTS "${SSH_USER}@${TARGET}" "pgrep -af Robust.Server || pgrep -af Content.Server || true"
-'''
+# запуск
+\$SSH \$HOST "sudo systemctl restart \$UNIT && systemctl is-active \$UNIT --quiet && systemctl status \$UNIT --no-pager | tail -n 20"
+"""
         }
       }
     }
-  }
-
-  post {
-    success { echo 'DONE' }
-    failure { echo 'FAILED' }
-    always  { echo 'END' }
   }
 }
