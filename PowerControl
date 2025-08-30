@@ -4,7 +4,7 @@ pipeline {
 
   parameters {
     credentials(name: 'SSH_CRED',
-      description: 'ID=host, Username+Key',
+      description: 'ID=host (IP/DNS), Username+Key',
       defaultValue: '162.19.232.192',
       credentialType: 'com.cloudbees.jenkins.plugins.sshcredentials.impl.BasicSSHUserPrivateKey')
     choice(name: 'ACTION', choices: ['status','stop','start','restart'], description: 'Действие')
@@ -15,9 +15,10 @@ pipeline {
     stage('Inventory') {
       steps {
         withCredentials([sshUserPrivateKey(credentialsId: params.SSH_CRED, keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
-          withEnv(["HOST=\${SSH_USER}@${params.SSH_CRED}"]) {
+          withEnv(["HOST_HOST=${params.SSH_CRED}"]) {
             sh '''#!/usr/bin/env bash
 set -Eeuo pipefail
+HOST="$SSH_USER@$HOST_HOST"
 ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$HOST" 'bash -se' <<'RS' > inv.txt
 set -Eeuo pipefail
 list_units() { systemctl list-units 'ss14@*.service' --all --no-legend | awk '{print $1}'; }
@@ -73,12 +74,13 @@ cat inv.txt
       steps {
         withCredentials([sshUserPrivateKey(credentialsId: params.SSH_CRED, keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
           withEnv([
-            "HOST=\${SSH_USER}@${params.SSH_CRED}",
+            "HOST_HOST=${params.SSH_CRED}",
             "ACT=${params.ACTION}",
             "TARGET=${params.TARGET}"
           ]) {
             sh '''#!/usr/bin/env bash
 set -Eeuo pipefail
+HOST="$SSH_USER@$HOST_HOST"
 # если TARGET пришёл из предыдущего stage через env, он перекроет пустой параметр
 TARGET="${TARGET:-$TARGET}"
 
