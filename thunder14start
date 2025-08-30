@@ -16,7 +16,10 @@ pipeline {
     string(name: 'CFG_FILE', defaultValue: '', description: 'server_config.toml, путь в воркспейсе')
     text  (name: 'CFG_FULL', defaultValue: '', description: 'или вставь полный TOML сюда')
   }
-  environment { REPO_NAME = "${params.REPO}".replaceAll('.*/','').replaceAll(/\\.git$/,'') }
+
+  environment {
+    REPO_NAME = "${params.REPO}".replaceAll('.*/','').replaceAll(/\.git$/,'')
+  }
 
   stages {
     stage('Take config') {
@@ -29,56 +32,69 @@ pipeline {
           catchError(buildResult: 'SUCCESS', stageResult: 'SUCCESS') { unstash 'cfg_upload' }
           catchError(buildResult: 'SUCCESS', stageResult: 'SUCCESS') { unstash 'cfg_text' }
         }
-        sh """#!/usr/bin/env bash
+        withEnv(["CFG_FILE=${params.CFG_FILE ?: ''}"]) {
+          sh '''#!/usr/bin/env bash
 set -Eeuo pipefail
-CFG=''; [ -n "${CFG_FILE}" ] && [ -f "${CFG_FILE}" ] && CFG="${CFG_FILE}"
+CFG=''
+[ -n "${CFG_FILE}" ] && [ -f "${CFG_FILE}" ] && CFG="${CFG_FILE}"
 [ -z "$CFG" ] && [ -f cfg_full.toml ] && CFG=cfg_full.toml
 [ -n "$CFG" ] || { echo "Нет TOML"; exit 2; }
 cp -f "$CFG" server_config.toml
-awk -F= '/^[[:space:]]*port[[:space:]]*=/{ sub(/#.*/,""); gsub(/[[:space:]]/,"",$2); if(\$2~/^[0-9]+$/){print \$2; exit}}' server_config.toml > .port || true
-"""
+awk -F= '/^[[:space:]]*port[[:space:]]*=/{ sub(/#.*/,""); gsub(/[[:space:]]/,"",$2); if($2~/^[0-9]+$/){print $2; exit}}' server_config.toml > .port || true
+'''
+        }
       }
     }
 
     stage('Checkout & Build') {
       steps {
         checkout([$class: 'GitSCM', branches: [[name: params.SRC_BRANCH]], userRemoteConfigs: [[url: params.REPO]]])
-        sh """#!/usr/bin/env bash
+        sh '''#!/usr/bin/env bash
 set -Eeuo pipefail
 mkdir -p artifact
 cp -a . artifact/
-"""
+'''
       }
     }
 
     stage('Deploy') {
       steps {
         sshagent(credentials: [params.SSH_ID]) {
-          sh """#!/usr/bin/env bash
+          script {
+            // экранируем для sed разделитель |
+            def RUN_CMD_ESC = (params.RUN_CMD ?: '').replace('|','\\|')
+            withEnv([
+              "SSH_USER=${params.SSH_USER}",
+              "HOST_HOST=${params.SERVER_IP}",
+              "APP=${params.APP_DIR}",
+              "BR=${params.BRANCH}",
+              "REPO_NAME=${env.REPO_NAME}",
+              "RUN_CMD_ESC=${RUN_CMD_ESC}"
+            ]) {
+              sh '''#!/usr/bin/env bash
 set -Eeuo pipefail
+
 SSH='ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=30'
 SCP='scp -o StrictHostKeyChecking=no'
-HOST='${params.SSH_USER}@${params.SERVER_IP}'
-APP='${params.APP_DIR}'
-BR='${params.BRANCH}'
+HOST="$SSH_USER@$HOST_HOST"
 UNIT="ss14@${REPO_NAME}-${BR}.service"
-DEST="\$APP/\$BR"
+DEST="$APP/$BR"
 
 # директории
-\$SSH \$HOST "sudo mkdir -p \$APP/\$BR/{current,data,logs} && sudo chown -R ${params.SSH_USER}:${params.SSH_USER} \$APP"
+$SSH "$HOST" "sudo mkdir -p $APP/$BR/{current,data,logs} && sudo chown -R $SSH_USER:$SSH_USER $APP"
 
 # артефакты
-rsync -a --delete --exclude 'server_config.toml' -e "ssh -o StrictHostKeyChecking=no" artifact/ "\$HOST:\$DEST/current/"
+rsync -a --delete --exclude 'server_config.toml' -e "ssh -o StrictHostKeyChecking=no" artifact/ "$HOST:$DEST/current/"
 
 # конфиг
-\$SCP server_config.toml "\$HOST:\$DEST/server_config.toml.tmp"
-\$SSH \$HOST "mv -f \$DEST/server_config.toml.tmp \$DEST/server_config.toml"
+$SCP server_config.toml "$HOST:$DEST/server_config.toml.tmp"
+$SSH "$HOST" "mv -f $DEST/server_config.toml.tmp $DEST/server_config.toml"
 
 # systemd шаблон
-\$SSH \$HOST "sudo bash -se" <<'RS'
+$SSH "$HOST" "sudo bash -se" <<'RS'
 set -Eeuo pipefail
 UNIT_FILE='/etc/systemd/system/ss14@.service'
-cat >"\$UNIT_FILE" <<'U'
+cat >"$UNIT_FILE" <<'U'
 [Unit]
 Description=SS14 (%i)
 After=network.target
@@ -100,14 +116,21 @@ StandardError=append:/opt/thunder-ss14/corporate-war/%i/logs/server.err
 WantedBy=multi-user.target
 U
 RS
-\$SSH \$HOST "sudo sed -i \"s|EXEC_RUN_CMD|${params.RUN_CMD//|/\\|}|\" /etc/systemd/system/ss14@.service && sudo systemctl daemon-reload"
+
+# подставляем команду запуска и перезагружаем юниты
+$SSH "$HOST" "sudo sed -i \"s|EXEC_RUN_CMD|$RUN_CMD_ESC|\" /etc/systemd/system/ss14@.service && sudo systemctl daemon-reload"
 
 # порт из TOML
-if [ -f .port ]; then PORT=\$(cat .port); \$SSH \$HOST "sudo ufw allow \$PORT/tcp || true; sudo ufw allow \$PORT/udp || true || true"; fi
+if [ -f .port ]; then
+  PORT="$(cat .port)"
+  $SSH "$HOST" "sudo ufw allow $PORT/tcp || true; sudo ufw allow $PORT/udp || true"
+fi
 
 # запуск
-\$SSH \$HOST "sudo systemctl restart \$UNIT && systemctl is-active \$UNIT --quiet && systemctl status \$UNIT --no-pager | tail -n 20"
-"""
+$SSH "$HOST" "sudo systemctl restart $UNIT && systemctl is-active $UNIT --quiet && systemctl status $UNIT --no-pager | tail -n 20"
+'''
+            }
+          }
         }
       }
     }
