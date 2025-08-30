@@ -155,6 +155,12 @@ set -Eeuo pipefail
 SSH_OPTS="-o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=120 -i \"$SSH_KEY\""
 esc() { printf '%s' "$1" | sed -e 's/\\\\/\\\\\\\\/g' -e 's/"/\\\\\\"/g'; }
 
+# PORT из cfg_full.toml или 1212 по умолчанию
+if [ -f "$WORKSPACE/cfg_full.toml" ]; then
+  PORT_FROM_CFG="$(awk -F= '/^[[:space:]]*port[[:space:]]*=/{gsub(/[[:space:]]/,"",$2); print $2; exit}' "$WORKSPACE/cfg_full.toml")"
+fi
+: "${PORT:=${PORT_FROM_CFG:-1212}}"
+
 repo_path="$(printf '%s' "${REPO}" | sed -E 's#(git@github.com:|https://github.com/)([^/]+)/([^/.]+)(\\.git)?#\\2/\\3#')"
 owner="${repo_path%/*}"
 repo="${repo_path##*/}"
@@ -163,7 +169,7 @@ DEST="/opt/${owner}/${repo}/${safe_branch}"
 UNIT="ss14@${safe_branch}.service"
 
 # ensure dest
-ssh $SSH_OPTS "${SSH_USER}@${TARGET}" "sudo mkdir -p '${DEST}' '{${DEST}/logs,${DEST}/data}' && sudo chown -R ${SSH_USER}:${SSH_USER} '${DEST}'"
+ssh $SSH_OPTS "${SSH_USER}@${TARGET}" "sudo mkdir -p '${DEST}' '${DEST}/logs' '${DEST}/data' && sudo chown -R ${SSH_USER}:${SSH_USER} '${DEST}'"
 
 # firewall open (tcp/udp)
 if ssh $SSH_OPTS "${SSH_USER}@${TARGET}" "command -v ufw >/dev/null 2>&1"; then
@@ -177,7 +183,7 @@ fi
 # upload binaries
 rsync -a --delete --exclude 'server_config.toml' --exclude 'data' -e "ssh $SSH_OPTS" artifact/ "${SSH_USER}@${TARGET}:${DEST}/"
 
-# base config (включая desc)
+# base config
 tmpdir="$(mktemp -d)"; cfg="$tmpdir/server_config.toml"
 SERVER_NAME_E="$(esc "$SERVER_NAME")"
 SERVER_DESC_E="$(esc "$SERVER_DESC")"
@@ -259,7 +265,9 @@ EOF
 if [ "${FORCE_CONFIG:-true}" = "true" ]; then
   rsync -a -e "ssh $SSH_OPTS" "$cfg" "${SSH_USER}@${TARGET}:${DEST}/server_config.toml"
 fi
-rsync -a -e "ssh $SSH_OPTS" "$unit_local" "${SSH_USER}@${TARGET}:/etc/systemd/system/${UNIT}"
+
+scp $SSH_OPTS "$unit_local" "${SSH_USER}@${TARGET}:/tmp/${UNIT}"
+ssh $SSH_OPTS "${SSH_USER}@${TARGET}" "sudo mv /tmp/${UNIT} /etc/systemd/system/${UNIT}"
 
 # enable + restart
 ssh $SSH_OPTS "${SSH_USER}@${TARGET}" "sudo systemctl daemon-reload && sudo systemctl enable ${UNIT} --now && sudo systemctl restart ${UNIT} && systemctl status ${UNIT} --no-pager || true"
