@@ -34,7 +34,7 @@ pipeline {
         }
         withEnv(["CFG_FILE=${params.CFG_FILE ?: ''}"]) {
           sh '''#!/usr/bin/env bash
-set -Eeuo pipefail
+set -Ee -o pipefail   # без -u: CFG_FILE может быть пустым
 CFG=''
 [ -n "${CFG_FILE}" ] && [ -f "${CFG_FILE}" ] && CFG="${CFG_FILE}"
 [ -z "$CFG" ] && [ -f cfg_full.toml ] && CFG=cfg_full.toml
@@ -61,7 +61,6 @@ cp -a . artifact/
       steps {
         sshagent(credentials: [params.SSH_ID]) {
           script {
-            // экранируем для sed разделитель |
             def RUN_CMD_ESC = (params.RUN_CMD ?: '').replace('|','\\|')
             withEnv([
               "SSH_USER=${params.SSH_USER}",
@@ -117,7 +116,7 @@ WantedBy=multi-user.target
 U
 RS
 
-# подставляем команду запуска и перезагружаем юниты
+# подстановка команды запуска и reload юнитов
 $SSH "$HOST" "sudo sed -i \"s|EXEC_RUN_CMD|$RUN_CMD_ESC|\" /etc/systemd/system/ss14@.service && sudo systemctl daemon-reload"
 
 # порт из TOML
