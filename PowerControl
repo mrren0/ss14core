@@ -3,9 +3,8 @@ pipeline {
   options { timestamps(); ansiColor('xterm'); timeout(time: 20, unit: 'MINUTES') }
 
   parameters {
-    string(name: 'SERVER_IP', defaultValue: '162.19.232.192', description: 'Хост')
     credentials(name: 'SSH_CRED',
-      description: 'SSH credential (Username + Private Key)',
+      description: 'SSH credential (ID = host, Username + Key)',
       defaultValue: '162.19.232.192',
       credentialType: 'com.cloudbees.jenkins.plugins.sshcredentials.impl.BasicSSHUserPrivateKey')
     choice(name: 'ACTION', choices: ['status','stop','start','restart'], description: 'Действие')
@@ -18,18 +17,29 @@ pipeline {
         withCredentials([sshUserPrivateKey(credentialsId: params.SSH_CRED, keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
           sh """#!/usr/bin/env bash
 set -Eeuo pipefail
-HOST="\${SSH_USER}@${params.SERVER_IP}"
+HOST="\${SSH_USER}@${params.SSH_CRED}"
 ssh -i "\$SSH_KEY" -o StrictHostKeyChecking=no "\$HOST" 'bash -se' <<'RS' > inv.txt
 set -Eeuo pipefail
-systemctl list-units 'ss14@*.service' --no-legend | awk '{print \$1}' | while read -r u; do
-  pid=\$(systemctl show -p MainPID --value "\$u")
+list_units() { systemctl list-units 'ss14@*.service' --all --no-legend | awk '{print \$1}'; }
+for u in \$(list_units); do
   state=\$(systemctl is-active "\$u" || true)
-  cwd=""; base=""; repo=""; br=""; port=""; tag=""
-  if [[ "\$pid" =~ ^[0-9]+\$ ]] && [ -e "/proc/\$pid/cwd" ]; then cwd=\$(readlink -f /proc/\$pid/cwd 2>/dev/null || true); fi
-  [[ "\$cwd" == /opt/thunder-ss14/*/current ]] && base=\${cwd%/current} || true
-  br=\${base##*/}; repo=\${base%/*}; repo=\${repo##*/}
-  [ -f "\$base/.env" ] && port=\$(grep -E '^PORT=' "\$base/.env"|cut -d= -f2-) || true
-  [ -f "\$base/.env" ] && tag=\$(grep -E '^INSTANCE_TAG=' "\$base/.env"|cut -d= -f2-) || true
+  pid=\$(systemctl show -p MainPID --value "\$u" 2>/dev/null || true)
+  work=\$(systemctl show -p WorkingDirectory --value "\$u" 2>/dev/null || true)
+  cwd=""
+  if [[ "\$pid" =~ ^[0-9]+\$ ]] && [ -e "/proc/\$pid/cwd" ]; then cwd=\$(readlink -f "/proc/\$pid/cwd" 2>/dev/null || true); fi
+  base=""
+  if [ -n "\$cwd" ] && [[ "\$cwd" == /opt/thunder-ss14/* ]]; then base=\$cwd; fi
+  if [ -z "\$base" ] && [ -n "\$work" ]; then base=\$work; fi
+  base=\${base%/current}
+  repo=""; br=""; port=""; tag=""
+  if [[ "\$base" == /opt/thunder-ss14/*/* ]]; then
+    br=\${base##*/}; repo=\${base%/*}; repo=\${repo##*/}
+    [ -f "\$base/.env" ] && port=\$(grep -E '^PORT=' "\$base/.env" | cut -d= -f2- || true)
+    [ -f "\$base/.env" ] && tag=\$(grep -E '^INSTANCE_TAG=' "\$base/.env" | cut -d= -f2- || true)
+    if [ -z "\$port" ] && [ -f "\$base/server_config.toml" ]; then
+      port=\$(sed -n 's/^\\s*port\\s*=\\s*\\([0-9][0-9]*\\).*/\\1/p' "\$base/server_config.toml" | head -n1 || true)
+    fi
+  fi
   echo "\$u|\$state|repo=\$repo|branch=\$br|port=\$port|tag=\$tag"
 done
 RS
@@ -63,7 +73,7 @@ cat inv.txt
         withCredentials([sshUserPrivateKey(credentialsId: params.SSH_CRED, keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
           sh """#!/usr/bin/env bash
 set -Eeuo pipefail
-HOST="\${SSH_USER}@${params.SERVER_IP}"
+HOST="\${SSH_USER}@${params.SSH_CRED}"
 TARGET="${TARGET:-${params.TARGET}}"
 [ -z "\$TARGET" ] && { echo "TARGET пуст"; exit 2; }
 
@@ -72,27 +82,20 @@ set -Eeuo pipefail
 TARGET='$TARGET'
 
 resolve_unit() {
-  # ss14@unit
-  if [[ "\$TARGET" == ss14@*.service ]]; then
-    echo "\$TARGET"; return 0
-  fi
-  # :PORT
+  if [[ "\$TARGET" == ss14@*.service ]]; then echo "\$TARGET"; return 0; fi
   if [ "\${TARGET:0:1}" = ":" ]; then
     P="\${TARGET:1}"
-    systemctl list-units 'ss14@*.service' --no-legend | awk '{print \$1}' | while read -r u; do
-      pid=\$(systemctl show -p MainPID --value "\$u"); [ -z "\$pid" ] && continue
-      cwd=\$(readlink -f "/proc/\$pid/cwd" 2>/dev/null || true); base=\${cwd%/current}
+    systemctl list-units 'ss14@*.service' --all --no-legend | awk '{print \$1}' | while read -r u; do
+      work=\$(systemctl show -p WorkingDirectory --value "\$u" 2>/dev/null || true); base=\${work%/current}
       [ -f "\$base/.env" ] && PORT=\$(grep -E '^PORT=' "\$base/.env" | cut -d= -f2-)
       [ "\$PORT" = "\$P" ] && echo "\$u"
     done
     return 0
   fi
-  # #TAG
   if [ "\${TARGET:0:1}" = "#" ]; then
     T="\${TARGET:1}"
-    systemctl list-units 'ss14@*.service' --no-legend | awk '{print \$1}' | while read -r u; do
-      pid=\$(systemctl show -p MainPID --value "\$u"); [ -z "\$pid" ] && continue
-      cwd=\$(readlink -f "/proc/\$pid/cwd" 2>/dev/null || true); base=\${cwd%/current}
+    systemctl list-units 'ss14@*.service' --all --no-legend | awk '{print \$1}' | while read -r u; do
+      work=\$(systemctl show -p WorkingDirectory --value "\$u" 2>/dev/null || true); base=\${work%/current}
       [ -f "\$base/.env" ] && TAG=\$(grep -E '^INSTANCE_TAG=' "\$base/.env" | cut -d= -f2-)
       [ "\$TAG" = "\$T" ] && echo "\$u"
     done
@@ -105,21 +108,10 @@ UNIT="\$(resolve_unit)"; [ -z "\$UNIT" ] && { echo "Не смог определ
 echo "UNIT: \$UNIT"
 
 case '${params.ACTION}' in
-  status)
-    systemctl status "\$UNIT" --no-pager || true
-    journalctl -u "\$UNIT" -n 100 --no-pager || true
-    ;;
-  stop)
-    systemctl stop "\$UNIT"
-    ;;
-  start)
-    systemctl start "\$UNIT"
-    systemctl is-active "\$UNIT"
-    ;;
-  restart)
-    systemctl restart "\$UNIT"
-    systemctl is-active "\$UNIT"
-    ;;
+  status)  systemctl status "\$UNIT" --no-pager || true; journalctl -u "\$UNIT" -n 100 --no-pager || true ;;
+  stop)    systemctl stop "\$UNIT" ;;
+  start)   systemctl start "\$UNIT"; systemctl is-active "\$UNIT" ;;
+  restart) systemctl restart "\$UNIT"; systemctl is-active "\$UNIT" ;;
 esac
 RS
 """
