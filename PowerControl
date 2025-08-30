@@ -43,7 +43,8 @@ cat inv.txt
           def lines = readFile('inv.txt').trim().split('\\n').findAll{ it }
           if (lines.isEmpty()) error 'Нет инстансов'
           def choices = lines.collect { ln ->
-            def unit = ln.tokenize('|')[0]; def state = ln.tokenize('|')[1]
+            def parts = ln.split('\\|')
+            def unit = parts[0]; def state = parts[1]
             def port = (ln =~ /port=([^|]+)/) ? (ln =~ /port=([^|]+)/)[0][1] : ''
             def tag  = (ln =~ /tag=([^|]+)/)  ? (ln =~ /tag=([^|]+)/)[0][1]  : ''
             "${unit}  [${state}]  :${port}  #${tag}"
@@ -63,38 +64,62 @@ HOST='${params.SSH_USER}@${params.SERVER_IP}'
 TARGET="${TARGET:-${params.TARGET}}"
 [ -z "\$TARGET" ] && { echo "TARGET пуст"; exit 2; }
 
-read -r -d '' RESOLVE <<'BASH'
-resolve_unit() {
-  case "\$TARGET" in
-    ss14@*.service) echo "\$TARGET"; return 0;;
-    :*)  P="\${TARGET#:}"; systemctl list-units 'ss14@*.service' --no-legend|awk '{print \$1}'|while read -r u; do
-           pid=\$(systemctl show -p MainPID --value "\$u"); [ -z "\$pid" ] && continue
-           cwd=\$(readlink -f /proc/\$pid/cwd 2>/dev/null || true); base=\${cwd%/current}
-           [ -f "\$base/.env" ] && PORT=\$(grep -E '^PORT=' "\$base/.env"|cut -d= -f2-)
-           [ "\$PORT" = "\$P" ] && echo "\$u"
-         done; return 0;;
-    \#*) T="\${TARGET#\\#}"; systemctl list-units 'ss14@*.service' --no-legend|awk '{print \$1}'|while read -r u; do
-           pid=\$(systemctl show -p MainPID --value "\$u"); [ -z "\$pid" ] && continue
-           cwd=\$(readlink -f /proc/\$pid/cwd 2>/dev/null || true); base=\${cwd%/current}
-           [ -f "\$base/.env" ] && TAG=\$(grep -E '^INSTANCE_TAG=' "\$base/.env"|cut -d= -f2-)
-           [ "\$TAG" = "\$T" ] && echo "\$u"
-         done; return 0;;
-    *) echo ""; return 1;;
-  esac
-}
-BASH
-
 ssh -o StrictHostKeyChecking=no "\$HOST" 'bash -se' <<'RS'
 set -Eeuo pipefail
 TARGET='$TARGET'
-${RESOLVE}
+
+resolve_unit() {
+  case "\$TARGET" in
+    ss14@*.service)
+      echo "\$TARGET"
+      return 0
+      ;;
+    :*)
+      P="\${TARGET#:}"
+      systemctl list-units 'ss14@*.service' --no-legend | awk '{print \$1}' | while read -r u; do
+        pid=\$(systemctl show -p MainPID --value "\$u"); [ -z "\$pid" ] && continue
+        cwd=\$(readlink -f /proc/\$pid/cwd 2>/dev/null || true); base=\${cwd%/current}
+        [ -f "\$base/.env" ] && PORT=\$(grep -E '^PORT=' "\$base/.env" | cut -d= -f2-)
+        [ "\$PORT" = "\$P" ] && echo "\$u"
+      done
+      return 0
+      ;;
+    #*)
+      T="\${TARGET#\#}"
+      systemctl list-units 'ss14@*.service' --no-legend | awk '{print \$1}' | while read -r u; do
+        pid=\$(systemctl show -p MainPID --value "\$u"); [ -z "\$pid" ] && continue
+        cwd=\$(readlink -f /proc/\$pid/cwd 2>/dev/null || true); base=\${cwd%/current}
+        [ -f "\$base/.env" ] && TAG=\$(grep -E '^INSTANCE_TAG=' "\$base/.env" | cut -d= -f2-)
+        [ "\$TAG" = "\$T" ] && echo "\$u"
+      done
+      return 0
+      ;;
+    *)
+      echo ""
+      return 1
+      ;;
+  esac
+}
+
 UNIT="\$(resolve_unit)"; [ -z "\$UNIT" ] && { echo "Не смог определить UNIT из TARGET=\$TARGET"; exit 3; }
 echo "UNIT: \$UNIT"
+
 case '${params.ACTION}' in
-  status)  systemctl status "\$UNIT" --no-pager || true; journalctl -u "\$UNIT" -n 100 --no-pager || true ;;
-  stop)    systemctl stop "\$UNIT" ;;
-  start)   systemctl start "\$UNIT"; systemctl is-active "\$UNIT" ;;
-  restart) systemctl restart "\$UNIT"; systemctl is-active "\$UNIT" ;;
+  status)
+    systemctl status "\$UNIT" --no-pager || true
+    journalctl -u "\$UNIT" -n 100 --no-pager || true
+    ;;
+  stop)
+    systemctl stop "\$UNIT"
+    ;;
+  start)
+    systemctl start "\$UNIT"
+    systemctl is-active "\$UNIT"
+    ;;
+  restart)
+    systemctl restart "\$UNIT"
+    systemctl is-active "\$UNIT"
+    ;;
 esac
 RS
 """
