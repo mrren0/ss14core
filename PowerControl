@@ -8,7 +8,7 @@ pipeline {
       defaultValue: '162.19.232.192',
       credentialType: 'com.cloudbees.jenkins.plugins.sshcredentials.impl.BasicSSHUserPrivateKey')
     choice(name: 'ACTION', choices: ['status','stop','start','restart'], description: 'Действие')
-    string(name: 'TARGET', defaultValue: '', description: 'Опц.: ss14@... или :PORT или #TAG')
+    string(name: 'TARGET', defaultValue: '', description: 'Опц.: ss14*.service или :PORT или #TAG')
   }
 
   stages {
@@ -24,7 +24,7 @@ set -Eeuo pipefail
 SYS()  { sudo -n systemctl "$@"; }
 JCTL() { sudo -n journalctl "$@"; }
 
-list_units() { SYS list-units 'ss14@*.service' --all --no-legend | awk '{print $1}'; }
+list_units() { SYS list-units 'ss14*.service' --all --no-legend | awk '{print $1}'; }
 for u in $(list_units); do
   state=$(SYS is-active "$u" || true)
   pid=$(SYS show -p MainPID --value "$u" 2>/dev/null || true)
@@ -95,10 +95,10 @@ SYS()  { sudo -n systemctl "$@"; }
 JCTL() { sudo -n journalctl "$@"; }
 
 resolve_unit() {
-  if [[ "$TARGET" == ss14@*.service ]]; then echo "$TARGET"; return 0; fi
+  if [[ "$TARGET" == ss14*.service ]]; then echo "$TARGET"; return 0; fi
   if [ "${TARGET:0:1}" = ":" ]; then
     P="${TARGET:1}"
-    SYS list-units 'ss14@*.service' --all --no-legend | awk '{print $1}' | while read -r u; do
+    SYS list-units 'ss14*.service' --all --no-legend | awk '{print $1}' | while read -r u; do
       work=$(SYS show -p WorkingDirectory --value "$u" 2>/dev/null || true); base=${work%/current}
       [ -f "$base/.env" ] && PORT=$(grep -E '^PORT=' "$base/.env" | cut -d= -f2-)
       [ "$PORT" = "$P" ] && echo "$u"
@@ -106,7 +106,7 @@ resolve_unit() {
   fi
   if [ "${TARGET:0:1}" = "#" ]; then
     T="${TARGET:1}"
-    SYS list-units 'ss14@*.service' --all --no-legend | awk '{print $1}' | while read -r u; do
+    SYS list-units 'ss14*.service' --all --no-legend | awk '{print $1}' | while read -r u; do
       work=$(SYS show -p WorkingDirectory --value "$u" 2>/dev/null || true); base=${work%/current}
       [ -f "$base/.env" ] && TAG=$(grep -E '^INSTANCE_TAG=' "$base/.env" | cut -d= -f2-)
       [ "$TAG" = "$T" ] && echo "$u"
@@ -118,13 +118,16 @@ resolve_unit() {
 UNIT="$(resolve_unit)"; [ -z "$UNIT" ] && { echo "Не смог определить UNIT из TARGET=$TARGET"; exit 3; }
 echo "UNIT: $UNIT"
 
+CUR=$(SYS is-active "$UNIT" || true)
 case "$ACT" in
   status)  SYS status "$UNIT" --no-pager || true; JCTL -u "$UNIT" -n 100 --no-pager || true ;;
-  stop)    SYS stop "$UNIT" ;;
-  start)   SYS start "$UNIT"; SYS is-active "$UNIT" ;;
+  stop)    [ "$CUR" = inactive ] && echo "already inactive" || SYS stop "$UNIT" ;;
+  start)   [ "$CUR" = active ] && echo "already active" || SYS start "$UNIT"; SYS is-active "$UNIT" ;;
   restart) SYS restart "$UNIT"; SYS is-active "$UNIT" ;;
   *) echo "Unknown action: $ACT"; exit 2 ;;
 esac
+
+echo "--- after: $(SYS is-active "$UNIT" || true)"
 RS
 '''
           }
