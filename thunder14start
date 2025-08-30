@@ -32,7 +32,6 @@ pipeline {
           catchError(buildResult: 'SUCCESS', stageResult: 'SUCCESS') { unstash 'cfg_upload' }
           catchError(buildResult: 'SUCCESS', stageResult: 'SUCCESS') { unstash 'cfg_text' }
         }
-        // только имеющиеся параметры; без новых env
         sh '''#!/usr/bin/env bash
 set -Ee -o pipefail   # без -u: CFG_FILE может быть пустым
 CFG=''
@@ -47,7 +46,13 @@ awk -F= '/^[[:space:]]*port[[:space:]]*=/{ sub(/#.*/,""); gsub(/[[:space:]]/,"",
 
     stage('Checkout & Build') {
       steps {
-        checkout([$class: 'GitSCM', branches: [[name: params.SRC_BRANCH]], userRemoteConfigs: [[url: params.REPO]]])
+        checkout([$class: 'GitSCM',
+          branches: [[name: params.SRC_BRANCH]],
+          userRemoteConfigs: [[
+            url: params.REPO,
+            credentialsId: 'github-token'   // используем уже настроенный кред Jenkins
+          ]]
+        ])
         sh '''#!/usr/bin/env bash
 set -Eeuo pipefail
 mkdir -p artifact
@@ -59,7 +64,6 @@ cp -a . artifact/
     stage('Deploy') {
       steps {
         sshagent(credentials: [params.SSH_ID]) {
-          // без дополнительных withEnv: используем auto env от Jenkins (SERVER_IP, SSH_USER, APP_DIR, BRANCH, RUN_CMD, REPO_NAME)
           sh '''#!/usr/bin/env bash
 set -Eeuo pipefail
 
