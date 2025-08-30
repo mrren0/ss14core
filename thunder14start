@@ -48,15 +48,16 @@ awk -F= '/^[[:space:]]*port[[:space:]]*=/{ sub(/#.*/,""); gsub(/[[:space:]]/,"",
       steps {
         checkout([$class: 'GitSCM',
           branches: [[name: params.SRC_BRANCH]],
-          userRemoteConfigs: [[
-            url: params.REPO,
-            credentialsId: 'github-token'   // используем уже настроенный кред Jenkins
-          ]]
+          userRemoteConfigs: [[url: params.REPO, credentialsId: 'github-token']]
         ])
         sh '''#!/usr/bin/env bash
 set -Eeuo pipefail
 mkdir -p artifact
-cp -a . artifact/
+# исключаем сам artifact и .git, чтобы не копировать каталог в себя
+rsync -a --delete \
+  --exclude '/artifact/***' \
+  --exclude '/.git/***' \
+  ./ artifact/.
 '''
       }
     }
