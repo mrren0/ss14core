@@ -1,133 +1,126 @@
 pipeline {
   agent any
-  options { timestamps(); ansiColor('xterm'); timeout(time: 20, unit: 'MINUTES') }
-
+  options { timestamps(); ansiColor('xterm'); timeout(time: 30, unit: 'MINUTES') }
   parameters {
-    credentials(name: 'SSH_CRED',
-      description: 'ID=host (IP/DNS), Username+Key',
-      defaultValue: '162.19.232.192',
-      credentialType: 'com.cloudbees.jenkins.plugins.sshcredentials.impl.BasicSSHUserPrivateKey')
-    choice(name: 'ACTION', choices: ['status','stop','start','restart'], description: 'Действие')
-    string(name: 'TARGET', defaultValue: '', description: 'Опц.: ss14@... или :PORT или #TAG')
+    string(name: 'SERVER_IP', defaultValue: '162.19.232.192', description: 'Хост')
+    string(name: 'SSH_ID', defaultValue: '162.19.232.192', description: 'Jenkins SSH creds ID')
+    string(name: 'SSH_USER', defaultValue: 'ubuntu', description: 'SSH user')
+
+    string(name: 'APP_DIR', defaultValue: '/opt/thunder-ss14/corporate-war', description: 'База приложения')
+    string(name: 'BRANCH',  defaultValue: 'master', description: 'Имя инстанса/ветки')
+    string(name: 'RUN_CMD', defaultValue: "exec ./run.sh --data-dir ../data", description: 'ExecStart')
+
+    string(name: 'REPO',   defaultValue: 'https://github.com/thunder-ss14/corporate-war.git', description: 'Репозиторий')
+    string(name: 'SRC_BRANCH', defaultValue: 'master', description: 'Ветка для сборки')
+
+    string(name: 'CFG_FILE', defaultValue: '', description: 'server_config.toml, путь в воркспейсе')
+    text  (name: 'CFG_FULL', defaultValue: '', description: 'или вставь полный TOML сюда')
+  }
+
+  environment {
+    REPO_NAME = "${params.REPO}".replaceAll('.*/','').replaceAll(/\.git$/,'')
   }
 
   stages {
-    stage('Inventory') {
-      steps {
-        withCredentials([sshUserPrivateKey(credentialsId: params.SSH_CRED, keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
-          withEnv(["HOST_HOST=${params.SSH_CRED}"]) {
-            sh '''#!/usr/bin/env bash
-set -Eeuo pipefail
-HOST="$SSH_USER@$HOST_HOST"
-ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$HOST" 'bash -se' <<'RS' > inv.txt
-set -Eeuo pipefail
-list_units() { systemctl list-units 'ss14@*.service' --all --no-legend | awk '{print $1}'; }
-for u in $(list_units); do
-  state=$(systemctl is-active "$u" || true)
-  pid=$(systemctl show -p MainPID --value "$u" 2>/dev/null || true)
-  work=$(systemctl show -p WorkingDirectory --value "$u" 2>/dev/null || true)
-  cwd=""
-  if [[ "$pid" =~ ^[0-9]+$ ]] && [ -e "/proc/$pid/cwd" ]; then cwd=$(readlink -f "/proc/$pid/cwd" 2>/dev/null || true); fi
-  base=""
-  if [ -n "$cwd" ] && [[ "$cwd" == /opt/thunder-ss14/* ]]; then base=$cwd; fi
-  if [ -z "$base" ] && [ -n "$work" ]; then base=$work; fi
-  base=${base%/current}
-  repo=""; br=""; port=""; tag=""
-  if [[ "$base" == /opt/thunder-ss14/*/* ]]; then
-    br=${base##*/}; repo=${base%/*}; repo=${repo##*/}
-    [ -f "$base/.env" ] && port=$(grep -E '^PORT=' "$base/.env" | cut -d= -f2- || true)
-    [ -f "$base/.env" ] && tag=$(grep -E '^INSTANCE_TAG=' "$base/.env" | cut -d= -f2- || true)
-    if [ -z "$port" ] && [ -f "$base/server_config.toml" ]; then
-      port=$(sed -n 's/^\\s*port\\s*=\\s*\\([0-9][0-9]*\\).*/\\1/p' "$base/server_config.toml" | head -n1 || true)
-    fi
-  fi
-  echo "$u|$state|repo=$repo|branch=$br|port=$port|tag=$tag"
-done
-RS
-cat inv.txt
-'''
-          }
-        }
-      }
-    }
-
-    stage('Pick target') {
-      when { expression { params.TARGET?.trim() == '' } }
+    stage('Take config') {
       steps {
         script {
-          def lines = readFile('inv.txt').trim().split('\\n').findAll{ it }
-          if (lines.isEmpty()) error 'Нет инстансов'
-          def choices = lines.collect { ln ->
-            def parts = ln.split('\\|')
-            def unit = parts[0]; def state = parts[1]
-            def port = (ln =~ /port=([^|]+)/) ? (ln =~ /port=([^|]+)/)[0][1] : ''
-            def tag  = (ln =~ /tag=([^|]+)/)  ? (ln =~ /tag=([^|]+)/)[0][1]  : ''
-            "${unit}  [${state}]  :${port}  #${tag}"
-          }
-          def picked = input message: 'Выбери сервер', parameters: [choice(name: 'UNIT', choices: choices.join('\n'))]
-          env.TARGET = picked.split('\\s\\s')[0]
+          if (params.CFG_FILE?.trim()) { stash name: 'cfg_upload', includes: "${params.CFG_FILE}" }
+          if (params.CFG_FULL?.trim())  { writeFile file: 'cfg_full.toml', text: params.CFG_FULL; stash name: 'cfg_text', includes: 'cfg_full.toml' }
         }
+        script {
+          catchError(buildResult: 'SUCCESS', stageResult: 'SUCCESS') { unstash 'cfg_upload' }
+          catchError(buildResult: 'SUCCESS', stageResult: 'SUCCESS') { unstash 'cfg_text' }
+        }
+        // только имеющиеся параметры; без новых env
+        sh '''#!/usr/bin/env bash
+set -Ee -o pipefail   # без -u: CFG_FILE может быть пустым
+CFG=''
+[ -n "${CFG_FILE:-}" ] && [ -f "${CFG_FILE}" ] && CFG="${CFG_FILE}"
+[ -z "$CFG" ] && [ -f cfg_full.toml ] && CFG=cfg_full.toml
+[ -n "$CFG" ] || { echo "Нет TOML"; exit 2; }
+cp -f "$CFG" server_config.toml
+awk -F= '/^[[:space:]]*port[[:space:]]*=/{ sub(/#.*/,""); gsub(/[[:space:]]/,"",$2); if($2~/^[0-9]+$/){print $2; exit}}' server_config.toml > .port || true
+'''
       }
     }
 
-    stage('Action') {
+    stage('Checkout & Build') {
       steps {
-        withCredentials([sshUserPrivateKey(credentialsId: params.SSH_CRED, keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
-          withEnv([
-            "HOST_HOST=${params.SSH_CRED}",
-            "ACT=${params.ACTION}",
-            "TARGET_PARAM=${params.TARGET}",
-            "TARGET_PICKED=${env.TARGET ?: ''}"
-          ]) {
-            sh '''#!/usr/bin/env bash
-set -Eeo pipefail   # без -u, чтобы безопасно обработать пустые переменные
-HOST="$SSH_USER@$HOST_HOST"
+        checkout([$class: 'GitSCM', branches: [[name: params.SRC_BRANCH]], userRemoteConfigs: [[url: params.REPO]]])
+        sh '''#!/usr/bin/env bash
+set -Eeuo pipefail
+mkdir -p artifact
+cp -a . artifact/
+'''
+      }
+    }
 
-# Собираем TARGET: приоритет параметру, иначе — выбранный на предыдущем шаге
-TARGET="${TARGET_PARAM-}"
-if [ -z "$TARGET" ]; then TARGET="${TARGET_PICKED-}"; fi
-[ -z "$TARGET" ] && { echo "TARGET пуст"; exit 2; }
-
-# Передаём ACT и TARGET на удалённый хост через env
-REMOTE_ENV=( ACT="$(printf %q "$ACT")" TARGET="$(printf %q "$TARGET")" )
-
-ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$HOST" "${REMOTE_ENV[@]}" 'bash -se' <<'RS'
+    stage('Deploy') {
+      steps {
+        sshagent(credentials: [params.SSH_ID]) {
+          // без дополнительных withEnv: используем auto env от Jenkins (SERVER_IP, SSH_USER, APP_DIR, BRANCH, RUN_CMD, REPO_NAME)
+          sh '''#!/usr/bin/env bash
 set -Eeuo pipefail
 
-resolve_unit() {
-  if [[ "$TARGET" == ss14@*.service ]]; then echo "$TARGET"; return 0; fi
-  if [ "${TARGET:0:1}" = ":" ]; then
-    P="${TARGET:1}"
-    systemctl list-units 'ss14@*.service' --all --no-legend | awk '{print $1}' | while read -r u; do
-      work=$(systemctl show -p WorkingDirectory --value "$u" 2>/dev/null || true); base=${work%/current}
-      [ -f "$base/.env" ] && PORT=$(grep -E '^PORT=' "$base/.env" | cut -d= -f2-)
-      [ "$PORT" = "$P" ] && echo "$u"
-    done; return 0
-  fi
-  if [ "${TARGET:0:1}" = "#" ]; then
-    T="${TARGET:1}"
-    systemctl list-units 'ss14@*.service' --all --no-legend | awk '{print $1}' | while read -r u; do
-      work=$(systemctl show -p WorkingDirectory --value "$u" 2>/dev/null || true); base=${work%/current}
-      [ -f "$base/.env" ] && TAG=$(grep -E '^INSTANCE_TAG=' "$base/.env" | cut -d= -f2-)
-      [ "$TAG" = "$T" ] && echo "$u"
-    done; return 0
-  fi
-  echo ""; return 1
-}
+SSH='ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=30'
+SCP='scp -o StrictHostKeyChecking=no'
+HOST="${SSH_USER}@${SERVER_IP}"
+APP="${APP_DIR}"
+BR="${BRANCH}"
+UNIT="ss14@${REPO_NAME}-${BR}.service"
+DEST="$APP/$BR"
 
-UNIT="$(resolve_unit)"; [ -z "$UNIT" ] && { echo "Не смог определить UNIT из TARGET=$TARGET"; exit 3; }
-echo "UNIT: $UNIT"
+# директории
+$SSH "$HOST" "sudo mkdir -p $APP/$BR/{current,data,logs} && sudo chown -R $SSH_USER:$SSH_USER $APP"
 
-case "$ACT" in
-  status)  systemctl status "$UNIT" --no-pager || true; journalctl -u "$UNIT" -n 100 --no-pager || true ;;
-  stop)    systemctl stop "$UNIT" ;;
-  start)   systemctl start "$UNIT"; systemctl is-active "$UNIT" ;;
-  restart) systemctl restart "$UNIT"; systemctl is-active "$UNIT" ;;
-  *) echo "Unknown action: $ACT"; exit 2 ;;
-esac
+# артефакты
+rsync -a --delete --exclude 'server_config.toml' -e "ssh -o StrictHostKeyChecking=no" artifact/ "$HOST:$DEST/current/"
+
+# конфиг
+$SCP server_config.toml "$HOST:$DEST/server_config.toml.tmp"
+$SSH "$HOST" "mv -f $DEST/server_config.toml.tmp $DEST/server_config.toml"
+
+# systemd шаблон
+$SSH "$HOST" "sudo bash -se" <<'RS'
+set -Eeuo pipefail
+UNIT_FILE='/etc/systemd/system/ss14@.service'
+cat >"$UNIT_FILE" <<'U'
+[Unit]
+Description=SS14 (%i)
+After=network.target
+
+[Service]
+WorkingDirectory=/opt/thunder-ss14/corporate-war/%i/current
+ExecStart=/usr/bin/bash -lc 'EXEC_RUN_CMD'
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGINT
+TimeoutStopSec=45
+User=ubuntu
+Group=ubuntu
+LimitNOFILE=65535
+StandardOutput=append:/opt/thunder-ss14/corporate-war/%i/logs/server.log
+StandardError=append:/opt/thunder-ss14/corporate-war/%i/logs/server.err
+
+[Install]
+WantedBy=multi-user.target
+U
 RS
+
+# подстановка команды запуска и reload юнитов
+RUN_CMD_LOCAL="${RUN_CMD}"
+$SSH "$HOST" "sudo sed -i \"s|EXEC_RUN_CMD|${RUN_CMD_LOCAL//|/\\|}|\" /etc/systemd/system/ss14@.service && sudo systemctl daemon-reload"
+
+# порт из TOML
+if [ -f .port ]; then
+  PORT="$(cat .port)"
+  $SSH "$HOST" "sudo ufw allow $PORT/tcp || true; sudo ufw allow $PORT/udp || true"
+fi
+
+# запуск
+$SSH "$HOST" "sudo systemctl restart $UNIT && systemctl is-active $UNIT --quiet && systemctl status $UNIT --no-pager | tail -n 20"
 '''
-          }
         }
       }
     }
