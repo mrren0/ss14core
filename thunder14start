@@ -1,10 +1,12 @@
 pipeline {
   agent any
   options { timestamps(); ansiColor('xterm'); timeout(time: 30, unit: 'MINUTES') }
+
   parameters {
-    string(name: 'SERVER_IP', defaultValue: '162.19.232.192', description: 'Хост')
-    string(name: 'SSH_ID', defaultValue: '162.19.232.192', description: 'Jenkins SSH creds ID')
-    string(name: 'SSH_USER', defaultValue: 'ubuntu', description: 'SSH user')
+    credentials(name: 'SSH_CRED',
+      description: 'ID=host (IP/DNS), Username+Key',
+      defaultValue: '162.19.232.192',
+      credentialType: 'com.cloudbees.jenkins.plugins.sshcredentials.impl.BasicSSHUserPrivateKey')
 
     string(name: 'APP_DIR', defaultValue: '/opt/thunder-ss14/corporate-war', description: 'База приложения')
     string(name: 'BRANCH',  defaultValue: 'master', description: 'Имя инстанса/ветки')
@@ -64,13 +66,14 @@ rsync -a --delete \
 
     stage('Deploy') {
       steps {
-        sshagent(credentials: [params.SSH_ID]) {
-          sh '''#!/usr/bin/env bash
+        withCredentials([sshUserPrivateKey(credentialsId: params.SSH_CRED, keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
+          withEnv(["HOST_HOST=${params.SSH_CRED}"]) {
+            sh '''#!/usr/bin/env bash
 set -Eeuo pipefail
 
-SSH='ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=30'
-SCP='scp -o StrictHostKeyChecking=no'
-HOST="${SSH_USER}@${SERVER_IP}"
+SSH="ssh -i \"$SSH_KEY\" -o StrictHostKeyChecking=no -o ServerAliveInterval=30"
+SCP="scp -i \"$SSH_KEY\" -o StrictHostKeyChecking=no"
+HOST="$SSH_USER@$HOST_HOST"
 APP="${APP_DIR}"
 BR="${BRANCH}"
 UNIT="ss14@${REPO_NAME}-${BR}.service"
@@ -80,7 +83,7 @@ DEST="$APP/$BR"
 $SSH "$HOST" "sudo mkdir -p $APP/$BR/{current,data,logs} && sudo chown -R $SSH_USER:$SSH_USER $APP"
 
 # артефакты
-rsync -a --delete --exclude 'server_config.toml' -e "ssh -o StrictHostKeyChecking=no" artifact/ "$HOST:$DEST/current/"
+rsync -a --delete --exclude 'server_config.toml' -e "$SSH" artifact/ "$HOST:$DEST/current/"
 
 # конфиг
 $SCP server_config.toml "$HOST:$DEST/server_config.toml.tmp"
@@ -126,6 +129,7 @@ fi
 # запуск
 $SSH "$HOST" "sudo systemctl restart $UNIT && systemctl is-active $UNIT --quiet && systemctl status $UNIT --no-pager | tail -n 20"
 '''
+          }
         }
       }
     }
