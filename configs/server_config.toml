@@ -1,30 +1,94 @@
 [net]
 tickrate = 30
-port = 1212
+port = 1220
+log_late_msg = false
+sendbuffersize = 2621420
+receivebuffersize = 2621420
+bindto = "0.0.0.0"
 
 [game]
-hostname = "THUNDER"
-desc = "THUNDER"
+hostname = "THUNDER — Corporate War"
+maxplayers = 120
+soft_max_players = 100
+welcomemsg = "Желаю хорошего дня!!"
+auto_pause_empty = true
 lobbyenabled = true
-maxplayers = 108
-soft_max_players = 108
+lobbyduration = 60
+desc = "Проект для где мясо, кровь, стрельба и стретагия."
+maxcharacterslots = 1
+# defaultpreset = "secret"
+# map_pool = "DefaultMapPool"
+role_timers = false
+
+[loki]
+enabled = true
+address = "http://localhost:3100"
+name = "thunder"
+username = "reno"
+password = "2E1$yMzaH3mp"
+
+[metrics]
+enabled = true
+host = "localhost"
+port = 8880
+
+[adminlogs]
+server_name = "thunder"
 
 [auth]
 mode = 1
 
 [hub]
 advertise = true
-tags = "hardcore, economy"
-
-server_url = "ss14://thunderhub.online:1212"
+server_url = "ss14://ss-14.ru/thunder"
+master_url = "https://spacestationmultiverse.com/hub/"
+tags = "lang:ru,region:eu_e"
 
 [status]
-bind = "*:1212"
+#connectaddress = "udp://s0.ss14.su:8888"
+
+#[discord]
+#ahelp_webhook = "https://discord.com/api/webhooks/1211011008508862514/gBtQnpBM2-Z2QpZ-47Sl3ZEwIgTQfAEs5ihTxXAKkocwA0NpHvzTDxEin0h5uysdYh7c"
+#round_webhook = "https://discord.com/api/webhooks/1211009457409232926/_0FwW1Cm7Au4m7q1FRMIGLmj4BD5bJUM1aZcZGkVJUrTIbVb3dfq6vHftBnXuFVY0FXa"
+#rich_main_icon_id = "white"
 
 [database]
 engine = "postgres"
-pg_host = "127.0.0.1"
+pg_host = "localhost"
 pg_port = 5432
 pg_database = "thunder"
 pg_username = "thunder"
 pg_password = "thunder159753"
+
+[sponsor]
+#api_url = "https://ss14.su/api"
+
+[whitelist]
+enabled = false
+reason = "whitelist-not-whitelisted-rp"
+
+[infolinks]
+discord = "https://discord.gg/jYTrvdNBK6"
+#website = "https://ss14.su"
+#wiki = "https://wiki.ss14.su"
+#patreon = "https://boosty.to/whitedream"
+#bug_report = "https://discord.station13.ru"
+
+#[white]
+#ohio_api_link = "http://localhost:5035"
+#gpt_api_link = "http://localhost:9987/api/gpt/ask?"
+#panda_status_bind = "localhost:4005"
+#utka_client_bind = "127.0.0.1:4000/api"
+#panda_token = "24b164ad57e176a85484b816b7686e27b1efb4639a2a9c17281e6ea7bdd72456"
+
+[tts]
+#enabled = true
+#api_url = "http://65.109.33.235:2384"
+
+[stalin]
+#salt = "2092a1f5-028b-4168-b43d-d10401c98803"
+#api_url = "http://127.0.0.1:2388/"
+#auth_url = "https://discord.com/api/oauth2/authorize?client_id=514125775381856259&redirect_uri=https%3A%2F%2Fbot.ss14.su%2Fconnect&response_type=code&scope=identify&state="
+
+[replay]
+auto_record_name = "{year}_{month}_{day}-{hour}_{minute}-round_thunder_{round}.zip"
