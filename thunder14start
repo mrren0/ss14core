@@ -9,7 +9,6 @@ pipeline {
     string(name: 'BRANCH', defaultValue: 'master', description: 'Ветка деплоя')
     string(name: 'REPO', defaultValue: 'https://github.com/thunder-ss14/corporate-war.git', description: 'Git repo (https или ssh)')
 
-    // Новые параметры для конфига: либо файл, либо текст
     string(name: 'CFG_FILE', defaultValue: '', description: 'Путь к server_config.toml в workspace (относительный). Приоритет у CFG_FULL.')
     text(name: 'CFG_FULL', defaultValue: '', description: 'Полное содержимое server_config.toml. Имеет приоритет над CFG_FILE.')
   }
@@ -20,7 +19,6 @@ pipeline {
     MSBUILDDISABLENODEREUSE = '1'
     DOTNET_CLI_HOME = "${WORKSPACE}/.dotnet_home"
     MSBUILDDEBUGPATH = "${WORKSPACE}/msbuild-logs"
-    // Генерируем имя репозитория для путей
     REPO_NAME = "${params.REPO}".replaceAll('.*/', '').replaceAll(/\\.git$/, '')
   }
 
@@ -28,12 +26,10 @@ pipeline {
     stage('Prepare Config') {
       steps {
         script {
-          // Приоритет у текстового поля CFG_FULL
           if (params.CFG_FULL?.trim()) {
             echo "Using config from text field (CFG_FULL)."
             writeFile(file: 'server_config.toml', text: params.CFG_FULL)
           }
-          // Если текста нет, пробуем взять файл
           else if (params.CFG_FILE?.trim()) {
             def sourceFile = file(params.CFG_FILE)
             if (sourceFile.exists()) {
@@ -43,17 +39,14 @@ pipeline {
               error "Configuration error: File ${params.CFG_FILE} not found in workspace."
             }
           }
-          // Если ничего не передали - это ошибка
           else {
             error "Configuration error: Either 'CFG_FILE' or 'CFG_FULL' must be provided."
           }
 
-          // Парсим PORT из конфига для последующих шагов
           sh '''#!/usr/bin/env bash
-            set +e # Важно: отключаем fail на этом шаге, если awk не найдет порт
+            set +e
             awk -F= '
             /^[[:space:]]*port[[:space:]]*=/ {
-                # Убираем пробелы, табы, кавычки любого типа, комментарии
                 gsub(/[ \\t"\\047]/, "", $2);
                 sub(/#.*/, "", $2);
                 if ($2 ~ /^[0-9]+$/) {
@@ -63,7 +56,6 @@ pipeline {
             }' server_config.toml > .port
             set -e
 
-            # Проверяем, получили ли мы порт, если нет - ставим дефолтный
             if [ -s .port ]; then
                 echo "PORT extracted from config: $(cat .port)"
             else
@@ -71,7 +63,6 @@ pipeline {
                 echo "1212" > .port
             fi
           '''
-          // Читаем порт в переменную Jenkins
           PORT = sh(script: 'cat .port', returnStdout: true).trim()
         }
       }
@@ -204,11 +195,67 @@ pipeline {
     stage('Deploy via SSH') {
       steps {
         script {
-          // Генерируем "безопасное" имя для папки и сервиса на основе ветки и репозитория
           SAFE_BRANCH = "${params.BRANCH}".replaceAll('/', '_').replaceAll(' ', '_').replaceAll('[^A-Za-z0-9._-]', '')
-          // Формируем конечный путь на сервере и имя сервиса
           DEST_PATH = "/opt/${REPO_NAME}/${SAFE_BRANCH}"
           SERVICE_NAME = "ss14-${REPO_NAME}-${SAFE_BRANCH}.service"
+
+          // Сохраняем сложную логику проверки в отдельный файл
+          writeFile file: 'remote_check.sh', text: '''#!/bin/bash
+            set -e
+            SERVICE_NAME="$1"
+            PORT="$2"
+            DEST_PATH="$3"
+            SERVER_IP="$4"
+
+            # Проверяем, что сервис активен
+            if ! sudo systemctl is-active --quiet "${SERVICE_NAME}"; then
+              echo "❌ Service is not active!"
+              sudo journalctl -u "${SERVICE_NAME}" -n 50 --no-pager
+              exit 1
+            fi
+
+            # Проверяем, что сокет слушает нужный порт
+            for i in {1..10}; do
+              if ss -lntu | grep -q ":${PORT}"; then
+                echo "✅ Port ${PORT} is open."
+                break
+              fi
+              sleep 3
+            done
+
+            # Пытаемся получить /info
+            INFO_URL="http://127.0.0.1:${PORT}/info"
+            for i in {1..20}; do
+              if curl -s --max-time 5 "$INFO_URL" > /tmp/server_info.json; then
+                echo "✅ Server responded to /info."
+                break
+              fi
+              sleep 5
+            done
+
+            # Пытаемся распарсить и показать информацию о сервере
+            if [ -f /tmp/server_info.json ]; then
+              echo "--- Server Info ---"
+              # Упрощенная версия без сложного экранирования
+              jq -r '.desc, .build.version, .build.engine_version, .build.fork_id' /tmp/server_info.json | while read -r desc; read -r version; read -r engine_version; read -r fork_id; do
+                echo "Desc: ${desc:-unknown}"
+                echo "Version: ${version:-unknown}"
+                echo "Engine: ${engine_version:-unknown}"
+                echo "Fork: ${fork_id:-unknown}"
+              done
+            else
+              echo "⚠️  Could not fetch server info, but service is running."
+            fi
+
+            echo "--- Connection Info ---"
+            echo "Connect via IP:   ss14://${SERVER_IP}:${PORT}"
+
+            # Пытаемся получить server_url из конфига
+            SERVER_URL=$(awk -F= '/^[[:space:]]*server_url[[:space:]]*=/ { gsub(/[ \\t"\\047]/, "", $2); print $2; exit }' "${DEST_PATH}/server_config.toml" 2>/dev/null || true)
+            if [ -n "$SERVER_URL" ]; then
+              echo "Connect via URL:  $SERVER_URL"
+            fi
+          '''
         }
         withCredentials([sshUserPrivateKey(credentialsId: params.SSH_CREDENTIALS_ID, keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
           sh """#!/usr/bin/env bash
@@ -218,7 +265,7 @@ pipeline {
             # Создаем целевую директорию
             ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "sudo mkdir -p '${DEST_PATH}/logs' && sudo chown -R ${SSH_USER}:${SSH_USER} '${DEST_PATH}'"
 
-            # Открываем порт из конфига в фаерволе
+            # Открываем порт в фаерволе
             if ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "command -v ufw >/dev/null 2>&1"; then
               ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "sudo ufw allow ${PORT}/tcp || true; sudo ufw allow ${PORT}/udp || true"
             elif ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "command -v firewall-cmd >/dev/null 2>&1"; then
@@ -227,14 +274,14 @@ pipeline {
               ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "sudo iptables -I INPUT -p tcp --dport ${PORT} -j ACCEPT || true; sudo iptables -I INPUT -p udp --dport ${PORT} -j ACCEPT || true"
             fi
 
-            # Загружаем бинарники (ИСКЛЮЧАЯ конфиг, чтобы его не перезатереть)
+            # Загружаем бинарники (ИСКЛЮЧАЯ конфиг)
             rsync -a --delete --exclude 'server_config.toml' --exclude 'data/' -e "ssh $SSH_OPTS" artifact/ "${SSH_USER}@${SERVER_IP}:${DEST_PATH}/"
 
             # Загружаем наш подготовленный конфиг
             scp $SSH_OPTS server_config.toml "${SSH_USER}@${SERVER_IP}:${DEST_PATH}/server_config.toml"
 
             # Создаем и загружаем systemd unit файл
-            cat > "${SERVICE_NAME}" << 'EOF'
+            cat > "${SERVICE_NAME}" << EOF
 [Unit]
 Description=SS14 ${SAFE_BRANCH} server (${REPO_NAME})
 After=network-online.target
@@ -263,54 +310,15 @@ EOF
               sudo systemctl restart ${SERVICE_NAME}
             "
 
-            # Проверяем запуск
+            # Загружаем скрипт проверки на удаленный сервер
+            scp $SSH_OPTS remote_check.sh "${SSH_USER}@${SERVER_IP}:/tmp/remote_check.sh"
+            ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "chmod +x /tmp/remote_check.sh"
+
             echo "Deployment complete. Waiting for service to start..."
             sleep 15
 
-            ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" /bin/bash -lc '
-              set -e
-              # Проверяем, что сервис активен
-              if ! sudo systemctl is-active --quiet '"${SERVICE_NAME}"'; then
-                echo "❌ Service is not active!"
-                sudo journalctl -u '"${SERVICE_NAME}"' -n 50 --no-pager
-                exit 1
-              fi
-
-              # Проверяем, что сокет слушает нужный порт
-              for i in {1..10}; do
-                if ss -lntu | grep -q ":${PORT}"; then
-                  echo "✅ Port ${PORT} is open."
-                  break
-                fi
-                sleep 3
-              done
-
-              # Пытаемся получить /info (ждем пока сервер полностью инициализируется)
-              INFO_URL="http://127.0.0.1:${PORT}/info"
-              for i in {1..20}; do
-                if curl -s --max-time 5 "$INFO_URL" > /tmp/server_info.json; then
-                  echo "✅ Server responded to /info."
-                  break
-                fi
-                sleep 5
-              done
-
-              # Пытаемся распарсить и показать информацию о сервере
-              if [ -f /tmp/server_info.json ]; then
-                echo "--- Server Info ---"
-                jq -r '"".desc           : \"\(.desc // \"unknown\")\"\\n.build.version   : \"\(.build.version // \"unknown\")\"\\n.build.engine_version: \"\(.build.engine_version // \"unknown\")\"\\n.build.fork_id    : \"\(.build.fork_id // \"unknown\")\"""' /tmp/server_info.json 2>/dev/null || cat /tmp/server_info.json
-              else
-                echo "⚠️  Could not fetch server info, but service is running."
-              fi
-
-              echo "--- Connection Info ---"
-              echo "Connect via IP:   ss14://${SERVER_IP}:${PORT}"
-              # Пытаемся получить server_url из конфига для красивого домена
-              SERVER_URL=$(awk -F= '"'/^[[:space:]]*server_url[[:space:]]*=/ { gsub(/[ \\t"\\047]/, "", $2); print $2; exit }'"' '"${DEST_PATH}/server_config.toml"' 2>/dev/null || true)
-              if [ -n "$SERVER_URL" ]; then
-                echo "Connect via URL:  $SERVER_URL"
-              fi
-            '
+            # Запускаем проверку на удаленной машине
+            ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "/tmp/remote_check.sh '${SERVICE_NAME}' '${PORT}' '${DEST_PATH}' '${SERVER_IP}'"
           """
         }
       }
