@@ -10,8 +10,7 @@ pipeline {
 
     string(name: 'BRANCH',  defaultValue: 'master', description: 'Ветка (build+deploy)')
     string(name: 'RUN_CMD', defaultValue: "exec ./run.sh --data-dir ../data", description: 'ExecStart')
-
-    string(name: 'REPO', defaultValue: 'https://github.com/thunder-ss14/corporate-war.git', description: 'Репозиторий')
+    string(name: 'REPO',    defaultValue: 'https://github.com/thunder-ss14/corporate-war.git', description: 'Репозиторий')
 
     string(name: 'CFG_FILE', defaultValue: '', description: 'server_config.toml, путь в воркспейсе')
     text  (name: 'CFG_FULL', defaultValue: '', description: 'или вставь полный TOML сюда')
@@ -53,10 +52,7 @@ awk -F= '/^[[:space:]]*port[[:space:]]*=/{ sub(/#.*/,""); gsub(/[[:space:]]/,"",
         sh '''#!/usr/bin/env bash
 set -Eeuo pipefail
 mkdir -p artifact
-rsync -a --delete \
-  --exclude '/artifact/***' \
-  --exclude '/.git/***' \
-  ./ artifact/.
+rsync -a --delete --exclude '/artifact/***' --exclude '/.git/***' ./ artifact/.
 '''
       }
     }
@@ -67,18 +63,18 @@ rsync -a --delete \
           withEnv(["HOST_HOST=${params.SSH_CRED}"]) {
             sh '''#!/usr/bin/env bash
 set -Eeuo pipefail
-
 SSH="ssh -i \"$SSH_KEY\" -o StrictHostKeyChecking=no -o ServerAliveInterval=30"
 SCP="scp -i \"$SSH_KEY\" -o StrictHostKeyChecking=no"
 HOST="$SSH_USER@$HOST_HOST"
 
-# derive /opt/<owner>/<repo>/<safe_branch>
+# /opt/<owner>/<repo>/<branch_sanitized>
 repo_path="$(printf '%s' "${REPO}" | sed -E 's#(git@[^:]+:|https?://[^/]+/)([^/]+/[^/.]+)(\\.git)?#\\2#')"
 owner="${repo_path%%/*}"; repo="${repo_path##*/}"
 SAFE_BR="$(printf '%s' "${BRANCH}" | tr '/ ' '_' | tr -cd 'A-Za-z0-9._-')"
 BASE="/opt/${owner}/${repo}"
 DEST="${BASE}/${SAFE_BR}"
 UNIT="ss14@${repo}-${SAFE_BR}.service"
+ENVFILE="$DEST/.service.env"
 
 # директории
 $SSH "$HOST" "sudo mkdir -p '$DEST/{current,data,logs}' && sudo chown -R $SSH_USER:$SSH_USER '$BASE'"
@@ -90,7 +86,18 @@ rsync -a --delete --exclude 'server_config.toml' -e "$SSH" artifact/ "$HOST:$DES
 $SCP server_config.toml "$HOST:$DEST/server_config.toml.tmp"
 $SSH "$HOST" "mv -f $DEST/server_config.toml.tmp $DEST/server_config.toml"
 
-# systemd шаблон через sudo tee
+# .service.env с RUN_CMD (надёжное экранирование)
+RUN_ESC=$(printf "%s" "${RUN_CMD}" | sed "s/'/'\"'\"'/g")
+$SSH "$HOST" /bin/bash -se <<EOF
+set -Eeuo pipefail
+tmp=\$(mktemp)
+printf "RUN_CMD='%s'\\n" '$RUN_ESC' > "\$tmp"
+sudo mkdir -p "$DEST"
+sudo chown $SSH_USER:$SSH_USER "\$tmp"
+sudo mv "\$tmp" "$ENVFILE"
+EOF
+
+# systemd шаблон через sudo tee, без sed
 $SSH "$HOST" BASE="$BASE" SSH_USER="$SSH_USER" /bin/bash -se <<'RS'
 set -Eeuo pipefail
 UNIT_FILE='/etc/systemd/system/ss14@.service'
@@ -100,8 +107,9 @@ Description=SS14 (%i)
 After=network.target
 
 [Service]
+EnvironmentFile=$BASE/%i/.service.env
 WorkingDirectory=$BASE/%i/current
-ExecStart=/usr/bin/bash -lc 'EXEC_RUN_CMD'
+ExecStart=/usr/bin/bash -lc "$RUN_CMD"
 Restart=on-failure
 RestartSec=5
 KillSignal=SIGINT
@@ -115,19 +123,16 @@ StandardError=append:$BASE/%i/logs/server.err
 [Install]
 WantedBy=multi-user.target
 U
+sudo systemctl daemon-reload
 RS
 
-# подстановка команды запуска и reload
-RUN_CMD_LOCAL="${RUN_CMD}"
-$SSH "$HOST" "sudo sed -i \"s|EXEC_RUN_CMD|${RUN_CMD_LOCAL//|/\\|}|\" /etc/systemd/system/ss14@.service && sudo systemctl daemon-reload"
-
-# порт из TOML → firewall
+# firewall из TOML
 if [ -f .port ]; then
   PORT="$(cat .port)"
   $SSH "$HOST" "sudo ufw allow $PORT/tcp || true; sudo ufw allow $PORT/udp || true"
 fi
 
-# запуск
+# запуск и статус
 $SSH "$HOST" "sudo systemctl restart $UNIT && systemctl is-active $UNIT --quiet && systemctl status $UNIT --no-pager | tail -n 20"
 '''
           }
