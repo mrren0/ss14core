@@ -11,14 +11,14 @@ pipeline {
     string(name: 'BRANCH',  defaultValue: 'master', description: 'Ветка (build+deploy)')
     string(name: 'RUN_CMD', defaultValue: "exec ./run.sh --data-dir ../data", description: 'ExecStart')
 
-    string(name: 'REPO',   defaultValue: 'https://github.com/thunder-ss14/corporate-war.git', description: 'Репозиторий')
+    string(name: 'REPO', defaultValue: 'https://github.com/thunder-ss14/corporate-war.git', description: 'Репозиторий')
 
     string(name: 'CFG_FILE', defaultValue: '', description: 'server_config.toml, путь в воркспейсе')
     text  (name: 'CFG_FULL', defaultValue: '', description: 'или вставь полный TOML сюда')
   }
 
   environment {
-    REPO_NAME = "${params.REPO}".replaceAll('.*/','').replaceAll(/\.git$/,'')
+    REPO_NAME = "${params.REPO}".replaceAll('.*/','').replaceAll(/\\.git$/,'')
   }
 
   stages {
@@ -72,6 +72,7 @@ SSH="ssh -i \"$SSH_KEY\" -o StrictHostKeyChecking=no -o ServerAliveInterval=30"
 SCP="scp -i \"$SSH_KEY\" -o StrictHostKeyChecking=no"
 HOST="$SSH_USER@$HOST_HOST"
 
+# derive /opt/<owner>/<repo>/<safe_branch>
 repo_path="$(printf '%s' "${REPO}" | sed -E 's#(git@[^:]+:|https?://[^/]+/)([^/]+/[^/.]+)(\\.git)?#\\2#')"
 owner="${repo_path%%/*}"; repo="${repo_path##*/}"
 SAFE_BR="$(printf '%s' "${BRANCH}" | tr '/ ' '_' | tr -cd 'A-Za-z0-9._-')"
@@ -79,17 +80,21 @@ BASE="/opt/${owner}/${repo}"
 DEST="${BASE}/${SAFE_BR}"
 UNIT="ss14@${repo}-${SAFE_BR}.service"
 
+# директории
 $SSH "$HOST" "sudo mkdir -p '$DEST/{current,data,logs}' && sudo chown -R $SSH_USER:$SSH_USER '$BASE'"
 
+# артефакты
 rsync -a --delete --exclude 'server_config.toml' -e "$SSH" artifact/ "$HOST:$DEST/current/"
 
+# конфиг
 $SCP server_config.toml "$HOST:$DEST/server_config.toml.tmp"
 $SSH "$HOST" "mv -f $DEST/server_config.toml.tmp $DEST/server_config.toml"
 
-$SSH "$HOST" BASE="$BASE" /bin/bash -se <<'RS'
+# systemd шаблон через sudo tee
+$SSH "$HOST" BASE="$BASE" SSH_USER="$SSH_USER" /bin/bash -se <<'RS'
 set -Eeuo pipefail
 UNIT_FILE='/etc/systemd/system/ss14@.service'
-cat >"$UNIT_FILE" <<U
+sudo tee "$UNIT_FILE" >/dev/null <<U
 [Unit]
 Description=SS14 (%i)
 After=network.target
@@ -112,14 +117,17 @@ WantedBy=multi-user.target
 U
 RS
 
+# подстановка команды запуска и reload
 RUN_CMD_LOCAL="${RUN_CMD}"
 $SSH "$HOST" "sudo sed -i \"s|EXEC_RUN_CMD|${RUN_CMD_LOCAL//|/\\|}|\" /etc/systemd/system/ss14@.service && sudo systemctl daemon-reload"
 
+# порт из TOML → firewall
 if [ -f .port ]; then
   PORT="$(cat .port)"
   $SSH "$HOST" "sudo ufw allow $PORT/tcp || true; sudo ufw allow $PORT/udp || true"
 fi
 
+# запуск
 $SSH "$HOST" "sudo systemctl restart $UNIT && systemctl is-active $UNIT --quiet && systemctl status $UNIT --no-pager | tail -n 20"
 '''
           }
