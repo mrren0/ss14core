@@ -1,0 +1,30 @@
+[net]
+tickrate = 30
+port = 1212
+
+[game]
+hostname = "THUNDER"
+desc = "THUNDER"
+lobbyenabled = true
+maxplayers = 108
+soft_max_players = 108
+
+[auth]
+mode = 1
+
+[hub]
+advertise = true
+tags = "hardcore, economy"
+
+server_url = "ss14://thunderhub.online:1212"
+
+[status]
+bind = "*:1212"
+
+[database]
+engine = "postgres"
+pg_host = "127.0.0.1"
+pg_port = 5432
+pg_database = "thunder"
+pg_username = "thunder"
+pg_password = "thunder159753"
