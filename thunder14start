@@ -72,19 +72,19 @@ pipeline {
       steps {
         withCredentials([string(credentialsId: 'token-github', variable: 'GITHUB_TOKEN')]) {
           sh '''#!/usr/bin/env bash
-            set -euo pipefail
-            rm -rf src
-            cat > askpass.sh <<'EOS'
-            #!/bin/sh
-            case "$1" in
-              *Username*) echo "x-access-token" ;;
-              *Password*) echo "$GITHUB_TOKEN" ;;
-            esac
-            EOS
-            chmod +x askpass.sh
-            GIT_ASKPASS="$PWD/askpass.sh" GIT_ASKPASS_REQUIRE=force git clone --depth 1 -b "$BRANCH" "$REPO" src
-            GIT_ASKPASS="$PWD/askpass.sh" GIT_ASKPASS_REQUIRE=force git -C src -c url.https://github.com/.insteadof=git@github.com: submodule update --init --recursive
-            git -C src config --local safe.directory "$(pwd)/src" || true
+set -euo pipefail
+rm -rf src
+cat > askpass.sh <<'EOF'
+#!/bin/sh
+case "$1" in
+  *Username*) echo "x-access-token" ;;
+  *Password*) echo "$GITHUB_TOKEN" ;;
+esac
+EOF
+chmod +x askpass.sh
+GIT_ASKPASS="$PWD/askpass.sh" GIT_ASKPASS_REQUIRE=force git clone --depth 1 -b "$BRANCH" "$REPO" src
+GIT_ASKPASS="$PWD/askpass.sh" GIT_ASKPASS_REQUIRE=force git -C src -c url.https://github.com/.insteadof=git@github.com: submodule update --init --recursive
+git -C src config --local safe.directory "$(pwd)/src" || true
           '''
         }
       }
