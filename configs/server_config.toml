@@ -1,50 +1,50 @@
 [net]
 tickrate = 30
-port = 1220
-log_late_msg = false
-sendbuffersize = 2621420
-receivebuffersize = 2621420
+port = 1216
+#log_late_msg = false
+#sendbuffersize = 2621420
+#receivebuffersize = 2621420
 bindto = "0.0.0.0"
 
 [game]
-hostname = "THUNDER — Corporate War"
+hostname = "THUNDER - Corporate War"
 maxplayers = 120
 soft_max_players = 100
 welcomemsg = "Желаю хорошего дня!"
 auto_pause_empty = true
 lobbyenabled = true
-lobbyduration = 60
+lobbyduration = 120
 desc = "Проект где мясо, кровь, стрельба и стретагия."
 maxcharacterslots = 1
 # defaultpreset = "secret"
 # map_pool = "DefaultMapPool"
 role_timers = false
 
-[loki]
-enabled = true
-address = "http://localhost:3100"
-name = "thunder"
-username = "reno"
-password = "2E1$yMzaH3mp"
-
-[metrics]
-enabled = true
-host = "localhost"
-port = 8880
-
-[adminlogs]
-server_name = "thunder"
-
-[auth]
-mode = 1
+#[loki]
+#enabled = true
+#address = "http://localhost:3100"
+#name = "thunder"
+#username = "reno"
+#password = "2E1$yMzaH3mp"
+#
+#[metrics]
+#enabled = true
+#host = "localhost"
+#port = 8880
+#
+#[adminlogs]
+#server_name = "thunder"
+#
+#[auth]
+#mode = 1
 
 [hub]
 advertise = true
-server_url = "ss14://ss-14.ru/thunder"
-master_url = "https://spacestationmultiverse.com/hub/"
+server_url = "ss14://ss-14.ru:1212"
+hub_urls = "https://hub.spacestation14.com/"
 tags = "lang:ru,region:eu_e"
 
-[status]
+#[status]
 #connectaddress = "udp://s0.ss14.su:8888"
 
 #[discord]
@@ -60,35 +60,35 @@ pg_database = "thunder"
 pg_username = "thunder"
 pg_password = "thunder159753"
 
-[sponsor]
-#api_url = "https://ss14.su/api"
-
-[whitelist]
-enabled = false
-reason = "whitelist-not-whitelisted-rp"
-
-[infolinks]
-discord = "https://discord.gg/jYTrvdNBK6"
-#website = "https://ss14.su"
-#wiki = "https://wiki.ss14.su"
-#patreon = "https://boosty.to/whitedream"
-#bug_report = "https://discord.station13.ru"
-
-#[white]
-#ohio_api_link = "http://localhost:5035"
-#gpt_api_link = "http://localhost:9987/api/gpt/ask?"
-#panda_status_bind = "localhost:4005"
-#utka_client_bind = "127.0.0.1:4000/api"
-#panda_token = "24b164ad57e176a85484b816b7686e27b1efb4639a2a9c17281e6ea7bdd72456"
-
-[tts]
-#enabled = true
-#api_url = "http://65.109.33.235:2384"
-
-[stalin]
-#salt = "2092a1f5-028b-4168-b43d-d10401c98803"
-#api_url = "http://127.0.0.1:2388/"
-#auth_url = "https://discord.com/api/oauth2/authorize?client_id=514125775381856259&redirect_uri=https%3A%2F%2Fbot.ss14.su%2Fconnect&response_type=code&scope=identify&state="
+#[sponsor]
+##api_url = "https://ss14.su/api"
+#
+#[whitelist]
+#enabled = false
+#reason = "whitelist-not-whitelisted-rp"
+#
+#[infolinks]
+#discord = "https://discord.gg/jYTrvdNBK6"
+##website = "https://ss14.su"
+##wiki = "https://wiki.ss14.su"
+##patreon = "https://boosty.to/whitedream"
+##bug_report = "https://discord.station13.ru"
+#
+##[white]
+##ohio_api_link = "http://localhost:5035"
+##gpt_api_link = "http://localhost:9987/api/gpt/ask?"
+##panda_status_bind = "localhost:4005"
+##utka_client_bind = "127.0.0.1:4000/api"
+##panda_token = "24b164ad57e176a85484b816b7686e27b1efb4639a2a9c17281e6ea7bdd72456"
+#
+#[tts]
+##enabled = true
+##api_url = "http://65.109.33.235:2384"
+#
+#[stalin]
+##salt = "2092a1f5-028b-4168-b43d-d10401c98803"
+##api_url = "http://127.0.0.1:2388/"
+##auth_url = "https://discord.com/api/oauth2/authorize?client_id=514125775381856259&redirect_uri=https%3A%2F%2Fbot.ss14.su%2Fconnect&response_type=code&scope=identify&state="
 
 [replay]
 auto_record_name = "{year}_{month}_{day}-{hour}_{minute}-round_thunder_{round}.zip"
