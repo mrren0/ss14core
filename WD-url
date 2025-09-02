@@ -7,14 +7,11 @@ pipeline {
     string(name: 'REPO', defaultValue: 'https://github.com/thunder-ss14/corporate-war.git', description: 'Git repo (https или ssh)')
     string(name: 'SERVER_DOMAIN', defaultValue: 'thunderhub.online', description: 'Домен для ссылки в манифесте')
 
-    // Твои «хитрые» параметры
     credentials(name: 'SSH_CRED',
       description: 'ID=host (IP/DNS), Username+Key',
       defaultValue: '88.99.104.199',
       credentialType: 'com.cloudbees.jenkins.plugins.sshcredentials.impl.BasicSSHUserPrivateKey')
-    choice(name: 'ACTION', choices: ['status','stop','start','restart'], description: 'Действие')
-    string(name: 'TARGET', defaultValue: '', description: 'Опц.: ss14*.service или :PORT или #TAG')
-  }
+}
 
   environment {
     DOTNET_CLI_TELEMETRY_OPTOUT = '1'
@@ -29,6 +26,11 @@ pipeline {
       steps {
         withCredentials([string(credentialsId: 'token-github', variable: 'GITHUB_TOKEN')]) {
           sh '''#!/usr/bin/env bash
+BRANCH="${BRANCH:-${BRANCH_NAME:-master}}"
+REPO="${REPO:-${GIT_URL:-}}"
+[ -n "$REPO" ] || REPO="$(git -C "$WORKSPACE" remote get-url origin 2>/dev/null || true)"
+[ -n "$REPO" ] || { echo "REPO не определён"; exit 1; }
+
 set -euo pipefail
 rm -rf src
 cat > askpass.sh <<'EOS'
@@ -80,19 +82,32 @@ set -Eeuo pipefail
 rm -rf artifact publish
 mkdir -p artifact publish
 
-OUTDIR="$(find src/release -maxdepth 4 -type f -name Robust.Server -printf '%h\\n' -quit || true)"
-[ -z "$OUTDIR" ] && { echo "❌ Не найдена сборка"; exit 1; }
-rsync -a --delete "$OUTDIR"/ artifact/
+# 1) Сначала пробуем готовый ZIP от Content.Packaging
+ZIP_FILE="$(ls -1 src/release/SS14.Server*_linux-x64.zip src/release/*Server*_linux-x64.zip 2>/dev/null | head -n1 || true)"
+if [ -n "$ZIP_FILE" ]; then
+  echo "Найден готовый ZIP: $ZIP_FILE"
+  cp "$ZIP_FILE" SS14.Server_linux-x64.zip
+else
+  # 2) Фолбэк: ищем выложенную директорию с Robust.Server и пакуем сами
+  OUTDIR="$(find src/release -maxdepth 4 -type f -name Robust.Server -printf '%h\\n' -quit || true)"
+  if [ -z "$OUTDIR" ]; then
+    echo "❌ Не найдена сборка в src/release"
+    ls -la src/release || true
+    exit 1
+  fi
+  echo "Найден OUTDIR: $OUTDIR"
+  rsync -a --delete "$OUTDIR"/ artifact/
+  ( cd artifact && zip -r ../SS14.Server_linux-x64.zip . )
+fi
 
-pushd artifact >/dev/null
-zip -r ../SS14.Server_linux-x64.zip .
-popd >/dev/null
-
+# Хэш и время для манифеста
 SHA256="$(sha256sum SS14.Server_linux-x64.zip | awk '{print $1}')"
 BUILD_TIME="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 
+# owner/repo из REPO
 repo_path="$(printf '%s' "${REPO}" | sed -E 's#(git@github.com:|https://github.com/)([^/]+/[^/.]+)(\\.git)?#\\2#')"
 repo="${repo_path##*/}"
+
 ZIP_NAME="SS14.Server_linux-x64.zip"
 MANIFEST_NAME="manifest.json"
 DOWNLOAD_URL="https://${SERVER_DOMAIN}/ss14/${repo}/${ZIP_NAME}"
@@ -122,11 +137,10 @@ mv "${ZIP_NAME}" publish/
 
     stage('Publish to HTTP') {
       steps {
-        // ВАЖНО: host не склеиваем в Groovy. Передаём HOST_HOST и собираем user@host в bash.
         withCredentials([sshUserPrivateKey(credentialsId: params.SSH_CRED, keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
           sh '''#!/usr/bin/env bash
 set -Eeuo pipefail
-HOST_HOST="${SSH_CRED}"   # ID параметра = DNS/IP хоста
+HOST_HOST="${SSH_CRED}"
 SSH_OPTS="-o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=120 -i \"$SSH_KEY\""
 repo_path="$(printf '%s' "${REPO}" | sed -E 's#(git@github.com:|https://github.com/)([^/]+/[^/.]+)(\\.git)?#\\2#')"
 repo="${repo_path##*/}"
@@ -141,7 +155,6 @@ ssh $SSH_OPTS "$HOST" "ls -la '${WEB_DIR}'"
       }
     }
 
-    // Опционально: управляющий шаг под твои ACTION/TARGET. Ничего критичного не делает, просто пример.
     stage('Control (optional)') {
       when { expression { return params.ACTION != null && params.ACTION.trim() != '' } }
       steps {
@@ -152,7 +165,6 @@ HOST_HOST="${SSH_CRED}"
 SSH_OPTS="-o StrictHostKeyChecking=no -i \"$SSH_KEY\""
 HOST="$SSH_USER@$HOST_HOST"
 
-# Пример: показать статус раздачи артефактов и версию nginx
 case "${ACTION}" in
   status)
     ssh $SSH_OPTS "$HOST" /bin/bash -lc '
@@ -163,7 +175,7 @@ case "${ACTION}" in
     '
     ;;
   start|stop|restart)
-    echo "ACTION=${ACTION} задан, но управление сервисами опущено в этом пайплайне."
+    echo "ACTION=${ACTION} задан, управление сервисами вне этого пайпа."
     ;;
   *)
     echo "ACTION=${ACTION} не распознан";;
