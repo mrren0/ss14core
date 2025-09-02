@@ -52,6 +52,10 @@ tags = "lang:ru,region:eu_e"
 #round_webhook = "https://discord.com/api/webhooks/1211009457409232926/_0FwW1Cm7Au4m7q1FRMIGLmj4BD5bJUM1aZcZGkVJUrTIbVb3dfq6vHftBnXuFVY0FXa"
 #rich_main_icon_id = "white"
 
+[console]
+loginlocal = true
+login_host_user = "Ren0san"
+
 [database]
 engine = "postgres"
 pg_host = "localhost"
