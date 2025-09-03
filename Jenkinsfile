@@ -8,8 +8,8 @@ pipeline {
     credentials(name: 'SSH_CRED',description: 'ID=host (IP/DNS), Username+Key',defaultValue: '162.19.232.192',
       credentialType: 'com.cloudbees.jenkins.plugins.sshcredentials.impl.BasicSSHUserPrivateKey')
     string(name: 'PORT', defaultValue: '1212', description: 'Порт сервера')
-    string(name: 'CONFIG_REPO', defaultValue: 'git@github.com:mrren0/ss14core.git', description: 'Опциональный git репозиторий с server_config.toml')
-    string(name: 'CONFIG_PATH', defaultValue: 'configs/server_config.toml', description: 'Путь к server_config.toml в CONFIG_REPO')
+    string(name: 'CONFIG_REPO', defaultValue: '', description: 'Опциональный git репозиторий с server_config.toml')
+    string(name: 'CONFIG_PATH', defaultValue: 'server_config.toml', description: 'Путь к server_config.toml в CONFIG_REPO')
   }
 
   environment {
