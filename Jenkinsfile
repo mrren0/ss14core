@@ -3,31 +3,13 @@ pipeline {
   options { timestamps(); ansiColor('xterm'); durabilityHint('PERFORMANCE_OPTIMIZED'); timeout(time: 90, unit: 'MINUTES') }
 
   parameters {
-		string(name: 'BRANCH', defaultValue: 'master', description: 'Ветка деплоя')
+                string(name: 'BRANCH', defaultValue: 'master', description: 'Ветка деплоя')
     string(name: 'REPO', defaultValue: 'https://github.com/thunder-ss14/corporate-war.git', description: 'Git repo (https или ssh)')
     string(name: 'SERVER_IP', defaultValue: '162.19.232.192', description: 'IP адрес сервера')
     string(name: 'SSH_CREDENTIALS_ID', defaultValue: '162.19.232.192', description: 'ID SSH credentials в Jenkins')
     string(name: 'PORT', defaultValue: '1212', description: 'Порт сервера')
-
-    string(name: 'SERVER_NAME', defaultValue: 'THUNDER', description: 'Имя сервера')
-    string(name: 'SERVER_DESC', defaultValue: 'THUNDER', description: 'Описание (в /info)')
-    string(name: 'SERVER_DOMAIN', defaultValue: 'thunderhub.online', description: 'Домен (для server_url)')
-    string(name: 'TICKRATE', defaultValue: '60', description: '[net] tickrate')
-    booleanParam(name: 'LOBBYENABLED', defaultValue: true, description: '[game] lobbyenabled')
-    string(name: 'AUTH_MODE', defaultValue: '1', description: '[auth] mode')
-    string(name: 'HUB_TAGS', defaultValue: 'hardcore, economy', description: '[hub] tags')
-
-    string(name: 'MAX_PLAYERS', defaultValue: '64', description: '[game] maxplayers')
-    string(name: 'SOFT_MAX_PLAYERS', defaultValue: '64', description: '[game] soft_max_players')
-
-    choice(name: 'DB_ENGINE', choices: ['sqlite','postgres'], description: '[database] engine')
-    string(name: 'PG_HOST', defaultValue: '127.0.0.1', description: 'Postgres host')
-    string(name: 'PG_PORT', defaultValue: '5432', description: 'Postgres port')
-    string(name: 'PG_DB',   defaultValue: 'thunder', description: 'Postgres database')
-    string(name: 'PG_USER', defaultValue: 'thunder', description: 'Postgres user')
-    string(name: 'PG_PASS', defaultValue: 'thunder', description: 'Postgres password (или пусто)')
-
-    booleanParam(name: 'FORCE_CONFIG', defaultValue: true, description: 'Перезаписывать server_config.toml при деплое')
+    string(name: 'CONFIG_REPO', defaultValue: '', description: 'Опциональный git репозиторий с server_config.toml')
+    string(name: 'CONFIG_PATH', defaultValue: 'server_config.toml', description: 'Путь к server_config.toml в CONFIG_REPO')
   }
 
   environment {
@@ -168,8 +150,7 @@ fi
 				withCredentials([sshUserPrivateKey(credentialsId: params.SSH_CREDENTIALS_ID, keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
 					sh '''#!/usr/bin/env bash
 set -Eeuo pipefail
-SSH_OPTS="-o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=120 -i \"$SSH_KEY\""
-esc() { printf '%s' "$1" | sed -e 's/\\\\/\\\\\\\\/g' -e 's/"/\\\\\\"/g'; }
+  SSH_OPTS="-o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=120 -i \"$SSH_KEY\""
 
 repo_path="$(printf '%s' "${REPO}" | sed -E 's#(git@github.com:|https://github.com/)([^/]+/[^/.]+)(\\.git)?#\\2#')"
 owner="${repo_path%%/*}"; repo="${repo_path##*/}"
@@ -188,67 +169,21 @@ else
   ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "sudo iptables -I INPUT -p tcp --dport ${PORT} -j ACCEPT || true; sudo iptables -I INPUT -p udp --dport ${PORT} -j ACCEPT || true"
 fi
 
-# upload binaries
-rsync -a --delete --exclude 'server_config.toml' --exclude 'data/' -e "ssh $SSH_OPTS" artifact/ "${SSH_USER}@${SERVER_IP}:${DEST}/"
+  # upload binaries
+  rsync -a --delete --exclude 'server_config.toml' --exclude 'data/' -e "ssh $SSH_OPTS" artifact/ "${SSH_USER}@${SERVER_IP}:${DEST}/"
 
-# base config (включая desc)
-tmpdir="$(mktemp -d)"; cfg="$tmpdir/server_config.toml"
-SERVER_NAME_E="$(esc "$SERVER_NAME")"
-SERVER_DESC_E="$(esc "$SERVER_DESC")"
-HUB_TAGS_E="$(esc "$HUB_TAGS")"
+  # upload server_config
+  if [ -n "$CONFIG_REPO" ]; then
+    rm -rf cfgrepo
+    git clone --depth 1 "$CONFIG_REPO" cfgrepo
+    scp $SSH_OPTS "cfgrepo/$CONFIG_PATH" "${SSH_USER}@${SERVER_IP}:${DEST}/server_config.toml"
+  else
+    scp $SSH_OPTS configs/server_config.toml "${SSH_USER}@${SERVER_IP}:${DEST}/server_config.toml"
+  fi
 
-cat >"$cfg" <<EOF
-[net]
-tickrate = ${TICKRATE}
-port = ${PORT}
-
-[game]
-hostname = "${SERVER_NAME_E}"
-desc = "${SERVER_DESC_E}"
-lobbyenabled = ${LOBBYENABLED}
-maxplayers = ${MAX_PLAYERS}
-soft_max_players = ${SOFT_MAX_PLAYERS}
-
-[auth]
-mode = ${AUTH_MODE}
-
-[hub]
-advertise = true
-tags = "${HUB_TAGS_E}"
-EOF
-
-[ -n "${SERVER_DOMAIN:-}" ] && printf 'server_url = "ss14://%s:%s"\\n' "${SERVER_DOMAIN}" "${PORT}" >> "$cfg"
-
-cat >>"$cfg" <<EOF
-[status]
-bind = "*:${PORT}"
-EOF
-
-if [ "${DB_ENGINE}" = "postgres" ]; then
-  PG_HOST_E="$(esc "$PG_HOST")"; PG_DB_E="$(esc "$PG_DB")"; PG_USER_E="$(esc "$PG_USER")"; PG_PASS_E="$(esc "$PG_PASS")"
-  cat >>"$cfg" <<EOF
-[database]
-engine = "postgres"
-pg_host = "${PG_HOST_E}"
-pg_port = ${PG_PORT}
-pg_database = "${PG_DB_E}"
-pg_username = "${PG_USER_E}"
-pg_password = "${PG_PASS_E}"
-EOF
-else
-  cat >>"$cfg" <<'EOF'
-[database]
-engine = "sqlite"
-sqlite_dbpath = "preferences.db"
-EOF
-fi
-
-if [ "${FORCE_CONFIG}" = "true" ] || ! ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "test -f ${DEST}/server_config.toml"; then
-  scp $SSH_OPTS "$cfg" "${SSH_USER}@${SERVER_IP}:${DEST}/server_config.toml"
-fi
-
-# systemd unit
-unit_local="$tmpdir/${UNIT}"
+  # systemd unit
+  tmpdir="$(mktemp -d)"
+  unit_local="$tmpdir/${UNIT}"
 cat >"$unit_local" <<EOF
 [Unit]
 Description=SS14 ${safe_branch} server
@@ -279,9 +214,6 @@ ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" /bin/bash -lc '
   sleep 30
   # вывод подключений
   echo "connect_ip: ss14://'"${SERVER_IP}"':'"${PORT}"'"
-  if [ -n "'"${SERVER_DOMAIN}"'" ]; then
-    echo "connect_domain: ss14://'"${SERVER_DOMAIN}"':'"${PORT}"'"
-  fi
 
   # дать серверу ожить
 
@@ -313,16 +245,11 @@ ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" /bin/bash -lc '
   [ -n "$ACZ_OUT" ] && echo "acz: ${ACZ_OUT}"
 
   echo "connect_ip: ss14://'"${SERVER_IP}"':'"${PORT}"'"
-  if [ -n "'"${SERVER_DOMAIN}"'" ]; then
-    echo "connect_domain: ss14://'"${SERVER_DOMAIN}"':'"${PORT}"'"
-  fi
 
   echo "--- server_config.toml (masked) ---"
   sed "s/^[[:space:]]*pg_password[[:space:]]*=.*/pg_password = \"***\"/" '"${DEST}"'/server_config.toml || true
 
 
-  # прежняя проверка без изменений
-  test "${DESC_OUT}" = "'"${SERVER_DESC_E}"'" || { echo "❌ desc не применился, потому что ${DESC_OUT} и ${SERVER_DESC_E}"; }
 '
 '''
         }
