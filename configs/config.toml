@@ -1,6 +1,6 @@
 [net]
 tickrate = 30
-port = 1337
+port = 1331
 bindto = "0.0.0.0"
 
 [game]
@@ -16,7 +16,7 @@ role_timers = false
 
 [hub]
 advertise = true
-server_url = "ss14://ss-14.ru:1337"
+server_url = "ss14://ss-14.ru:1331"
 hub_urls = "https://hub.spacestation14.com/"
 tags = "lang:ru,region:eu_e,LRP"
 

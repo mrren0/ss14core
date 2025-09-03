@@ -1,98 +1,109 @@
 [net]
 tickrate = 30
-port = 1216
-#log_late_msg = false
-#sendbuffersize = 2621420
-#receivebuffersize = 2621420
-bindto = "0.0.0.0"
+port = 1337
+log_late_msg = false
+sendbuffersize = 2621420
+receivebuffersize = 2621420
+#bindto = "162.19.162.202"
+bindto = "127.0.0.1"
+#pvs = false
+
+#[watchdog]
+#baseUrl = "http://localhost:5000"
 
 [game]
 hostname = "THUNDER - Corporate War"
+desc = "Проект где мясо, кровь, стрельба и стретагия."
 maxplayers = 120
 soft_max_players = 100
 welcomemsg = "Желаю хорошего дня!"
 auto_pause_empty = true
 lobbyenabled = true
 lobbyduration = 120
-desc = "Проект где мясо, кровь, стрельба и стретагия."
-maxcharacterslots = 1
-# defaultpreset = "secret"
+#defaultpreset = "extended"
+#map_rotation = false
 # map_pool = "DefaultMapPool"
 role_timers = false
+maxcharacterslots = 1
+
 
 #[loki]
 #enabled = true
 #address = "http://localhost:3100"
-#name = "thunder"
-#username = "reno"
-#password = "2E1$yMzaH3mp"
-#
+#name = "totalwar"
+#username = "sussie"
+#password = "uH$girSzHyNP9aRZDeu"
+
 #[metrics]
 #enabled = true
 #host = "localhost"
-#port = 8880
-#
+#port = 5550
+
 #[adminlogs]
-#server_name = "thunder"
-#
+#server_name = "totalwar"
+
 #[auth]
 #mode = 1
+#server = "https://auth.spacestation14.com/"
 
 [hub]
 advertise = true
-server_url = "ss14://ss-14.ru:1212"
-hub_urls = "https://hub.spacestation14.com/"
+server_url = "ss14s://ss-14.su/thunder"
+hub_urls = "https://hub.spacestation14.com/,https://hub.ss14.su/"
 tags = "lang:ru,region:eu_e"
 
-#[status]
-#connectaddress = "udp://s0.ss14.su:8888"
+[status]
+connectaddress = "udp://ss-14.ru:1212"
 
 #[discord]
-#ahelp_webhook = "https://discord.com/api/webhooks/1211011008508862514/gBtQnpBM2-Z2QpZ-47Sl3ZEwIgTQfAEs5ihTxXAKkocwA0NpHvzTDxEin0h5uysdYh7c"
-#round_webhook = "https://discord.com/api/webhooks/1211009457409232926/_0FwW1Cm7Au4m7q1FRMIGLmj4BD5bJUM1aZcZGkVJUrTIbVb3dfq6vHftBnXuFVY0FXa"
-#rich_main_icon_id = "white"
-
-[console]
-loginlocal = true
-login_host_user = "Ren0san"
+#ahelp_webhook = "https://discord.com/api/webhooks/1085780306872774697/dVCneYlBWO15Uxonpa2N3VA6Xh-CB4mgOStqEuwdb3zDw4bF4mV1USjB3g_M6uHl-bx-"
+#round_webhook = "https://discord.com/api/webhooks/1085780055369719829/O8SoRazU3F4fY814HkI3wRfPpJw9VBb_oRb0mPoCzxSqqGJKgyT0rvXC6f9yFxUp5SP5"
+#rich_main_icon_id = "gprime"
 
 [database]
 engine = "postgres"
-pg_host = "localhost"
+pg_host = "127.0.0.1"
 pg_port = 5432
 pg_database = "thunder"
 pg_username = "thunder"
 pg_password = "thunder159753"
 
-#[sponsor]
-##api_url = "https://ss14.su/api"
-#
+[console]
+login_host_user = "Ren0san"
+
 #[whitelist]
-#enabled = false
+#enabled = true
 #reason = "whitelist-not-whitelisted-rp"
-#
-#[infolinks]
-#discord = "https://discord.gg/jYTrvdNBK6"
-##website = "https://ss14.su"
-##wiki = "https://wiki.ss14.su"
-##patreon = "https://boosty.to/whitedream"
-##bug_report = "https://discord.station13.ru"
-#
-##[white]
-##ohio_api_link = "http://localhost:5035"
-##gpt_api_link = "http://localhost:9987/api/gpt/ask?"
-##panda_status_bind = "localhost:4005"
-##utka_client_bind = "127.0.0.1:4000/api"
-##panda_token = "24b164ad57e176a85484b816b7686e27b1efb4639a2a9c17281e6ea7bdd72456"
-#
+
+#[sponsor]
+#api_url = "https://ss14.su/api"
+
 #[tts]
-##enabled = true
-##api_url = "http://65.109.33.235:2384"
+#enabled = true
+#api_url = "http://65.109.33.235:2384"
+
+#[infolinks]
+#discord = "https://discord.gg/QNPbR5eYpT"
+#website = "https://ss14.su"
+#wiki = "https://wiki.ss14.su"
+#patreon = "https://boosty.to/whitedream"
+#bug_report = "https://discord.ss14.su"
+#
+#[white]
+#ohio_api_link = "http://localhost:5035"
+#gpt_api_link = "http://localhost:9987/api/gpt/ask?"
+#looc.cooldown_time = 0
+#non_peaceful_round_end_enabled = false
+##panda_status_bind = "localhost:4009"
+#utka_client_bind = "127.0.0.1:4000/api"
+##panda_token = "b0d871bc119fd9f817d8ce97fae336ebbe3b90a7c629858bc06644f74adb2392"
+#time_tracker_api = "https://ss14.su/api/jobs/"
+#time_tracker_key = "hnredjy5uip3498th43n4j0re3gy4rklyhg4"
 #
 #[stalin]
-##salt = "2092a1f5-028b-4168-b43d-d10401c98803"
-##api_url = "http://127.0.0.1:2388/"
-##auth_url = "https://discord.com/api/oauth2/authorize?client_id=514125775381856259&redirect_uri=https%3A%2F%2Fbot.ss14.su%2Fconnect&response_type=code&scope=identify&state="
+#salt = "2092a1f5-028b-4168-b43d-d10401c98803"
+#api_url = "http://127.0.0.1:2388/"
+#auth_url = "https://discord.com/api/oauth2/authorize?client_id=514125775381856259&redirect_uri=https%3A%2F%2Fbot.ss14.su%2Fconnect&response_type=code&scope=identify&state="
 
 [replay]
 auto_record_name = "{year}_{month}_{day}-{hour}_{minute}-round_thunder_{round}.zip"
