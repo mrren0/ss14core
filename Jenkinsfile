@@ -8,6 +8,8 @@ pipeline {
     string(name: 'SERVER_IP', defaultValue: '162.19.232.192', description: 'IP адрес сервера')
     string(name: 'SSH_CREDENTIALS_ID', defaultValue: '162.19.232.192', description: 'ID SSH credentials в Jenkins')
     string(name: 'PORT', defaultValue: '1212', description: 'Порт сервера')
+    string(name: 'CONFIG_REPO', defaultValue: '', description: 'Опциональный git репозиторий с server_config.toml')
+    string(name: 'CONFIG_PATH', defaultValue: 'server_config.toml', description: 'Путь к server_config.toml в CONFIG_REPO')
   }
 
   environment {
@@ -171,7 +173,13 @@ fi
   rsync -a --delete --exclude 'server_config.toml' --exclude 'data/' -e "ssh $SSH_OPTS" artifact/ "${SSH_USER}@${SERVER_IP}:${DEST}/"
 
   # upload server_config
-  scp $SSH_OPTS configs/server_config.toml "${SSH_USER}@${SERVER_IP}:${DEST}/server_config.toml"
+  if [ -n "$CONFIG_REPO" ]; then
+    rm -rf cfgrepo
+    git clone --depth 1 "$CONFIG_REPO" cfgrepo
+    scp $SSH_OPTS "cfgrepo/$CONFIG_PATH" "${SSH_USER}@${SERVER_IP}:${DEST}/server_config.toml"
+  else
+    scp $SSH_OPTS configs/server_config.toml "${SSH_USER}@${SERVER_IP}:${DEST}/server_config.toml"
+  fi
 
   # systemd unit
   tmpdir="$(mktemp -d)"
