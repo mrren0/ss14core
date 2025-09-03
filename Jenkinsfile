@@ -5,8 +5,8 @@ pipeline {
   parameters {
                 string(name: 'BRANCH', defaultValue: 'master', description: 'Ветка деплоя')
     string(name: 'REPO', defaultValue: 'https://github.com/thunder-ss14/corporate-war.git', description: 'Git repo (https или ssh)')
-    string(name: 'SERVER_IP', defaultValue: '162.19.232.192', description: 'IP адрес сервера')
-    string(name: 'SSH_CREDENTIALS_ID', defaultValue: '162.19.232.192', description: 'ID SSH credentials в Jenkins')
+    credentials(name: 'SSH_CRED',description: 'ID=host (IP/DNS), Username+Key',defaultValue: '162.19.232.192',
+      credentialType: 'com.cloudbees.jenkins.plugins.sshcredentials.impl.BasicSSHUserPrivateKey')
     string(name: 'PORT', defaultValue: '1212', description: 'Порт сервера')
     string(name: 'CONFIG_REPO', defaultValue: '', description: 'Опциональный git репозиторий с server_config.toml')
     string(name: 'CONFIG_PATH', defaultValue: 'server_config.toml', description: 'Путь к server_config.toml в CONFIG_REPO')
