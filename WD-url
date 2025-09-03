@@ -5,7 +5,7 @@ pipeline {
   parameters {
     string(name: 'BRANCH', defaultValue: 'master', description: 'Ветка деплоя')
     string(name: 'REPO', defaultValue: 'https://github.com/thunder-ss14/corporate-war.git', description: 'Git repo (https или ssh)')
-    string(name: 'SERVER_DOMAIN', defaultValue: 'thunderhub.online', description: 'Домен для ссылки в манифесте')
+    string(name: 'SERVER_DOMAIN', defaultValue: '88.99.104.199', description: 'Домен для ссылки в манифесте')
 
     credentials(name: 'SSH_CRED',
       description: 'ID=host (IP/DNS), Username+Key',
@@ -110,7 +110,7 @@ repo="${repo_path##*/}"
 
 ZIP_NAME="SS14.Server_linux-x64.zip"
 MANIFEST_NAME="manifest.json"
-DOWNLOAD_URL="https://${SERVER_DOMAIN}/ss14/${repo}/${ZIP_NAME}"
+DOWNLOAD_URL="http://${SERVER_DOMAIN}/ss14/${repo}/${ZIP_NAME}"
 
 cat > "${MANIFEST_NAME}" <<EOF
 {
