@@ -5,11 +5,16 @@ pipeline {
   parameters {
                 string(name: 'BRANCH', defaultValue: 'master', description: 'Ветка деплоя')
     string(name: 'REPO', defaultValue: 'https://github.com/thunder-ss14/corporate-war.git', description: 'Git repo (https или ssh)')
-    string(name: 'SERVER_IP', defaultValue: '162.19.232.192', description: 'IP адрес сервера')
-    string(name: 'SSH_CREDENTIALS_ID', defaultValue: '162.19.232.192', description: 'ID SSH credentials в Jenkins')
+    string(name: 'SERVER_IP', defaultValue: '88.99.104.199', description: 'IP адрес сервера')
+    string(name: 'SSH_CREDENTIALS_ID', defaultValue: '88.99.104.199', description: 'ID SSH credentials в Jenkins')
     string(name: 'PORT', defaultValue: '1212', description: 'Порт сервера')
-    string(name: 'CONFIG_REPO', defaultValue: '', description: 'Опциональный git репозиторий с server_config.toml')
-    string(name: 'CONFIG_PATH', defaultValue: 'server_config.toml', description: 'Путь к server_config.toml в CONFIG_REPO')
+    string(name: 'CONFIG_REPO', defaultValue: 'https://github.com/mrren0/ss14core.git', description: 'Опциональный git репозиторий с server_config.toml')
+    string(name: 'CONFIG_PATH', defaultValue: 'configs/server_config.toml', description: 'Путь к server_config.toml в CONFIG_REPO')
+
+    credentials(name: 'SSH_CRED',
+      description: 'ID=host (IP/DNS), Username+Key',
+      defaultValue: '88.99.104.199',
+      credentialType: 'com.cloudbees.jenkins.plugins.sshcredentials.impl.BasicSSHUserPrivateKey')
   }
 
   environment {
@@ -115,16 +120,18 @@ tar -C artifact -czf "ss14-server-${BRANCH}.tar.gz" .
 
     stage('Ensure .NET 9 runtime on target') {
 			steps {
-				withCredentials([sshUserPrivateKey(credentialsId: params.SSH_CREDENTIALS_ID, keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
-					sh '''#!/usr/bin/env bash
+        withEnv(["HOST_HOST=${params.SSH_CRED}"]) {
+  				withCredentials([sshUserPrivateKey(credentialsId: params.SSH_CREDENTIALS_ID, keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
+  					sh '''#!/usr/bin/env bash
 set -Eeuo pipefail
 SSH_OPTS="-o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=120 -i \"$SSH_KEY\""
+HOST="$SSH_USER@$HOST_HOST"
 
-if ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "dotnet --list-runtimes 2>/dev/null | grep -q '^Microsoft.NETCore.App 9\\.'"; then
+if ssh $SSH_OPTS "$HOST" "dotnet --list-runtimes 2>/dev/null | grep -q '^Microsoft.NETCore.App 9\\.'"; then
   echo "dotnet 9 runtime: OK"
 else
   echo "dotnet 9 runtime: INSTALL"
-  ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" /bin/bash -lc '
+  ssh $SSH_OPTS "$HOST" /bin/bash -lc '
     set -Eeuo pipefail
     if ! dpkg -s packages-microsoft-prod >/dev/null 2>&1; then
       . /etc/os-release
@@ -137,20 +144,23 @@ else
     sudo apt-get update -y
     sudo apt-get install -y dotnet-runtime-9.0
   '
-  ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "dotnet --list-runtimes | grep -q '^Microsoft.NETCore.App 9\\.'"
+  ssh $SSH_OPTS "$HOST" "dotnet --list-runtimes | grep -q '^Microsoft.NETCore.App 9\\.'"
   echo "dotnet 9 runtime: INSTALLED"
 fi
 '''
+          }
         }
       }
     }
 
     stage('Deploy via SSH') {
 			steps {
-				withCredentials([sshUserPrivateKey(credentialsId: params.SSH_CREDENTIALS_ID, keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
-					sh '''#!/usr/bin/env bash
+        withEnv(["HOST_HOST=${params.SSH_CRED}"]) {
+  				withCredentials([sshUserPrivateKey(credentialsId: params.SSH_CREDENTIALS_ID, keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
+  					sh '''#!/usr/bin/env bash
 set -Eeuo pipefail
   SSH_OPTS="-o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=120 -i \"$SSH_KEY\""
+  HOST="$SSH_USER@$HOST_HOST"
 
 repo_path="$(printf '%s' "${REPO}" | sed -E 's#(git@github.com:|https://github.com/)([^/]+/[^/.]+)(\\.git)?#\\2#')"
 owner="${repo_path%%/*}"; repo="${repo_path##*/}"
@@ -158,27 +168,27 @@ safe_branch="$(printf '%s' "${BRANCH}" | tr '/ ' '_' | tr -cd 'A-Za-z0-9._-')"
 DEST="/opt/${owner}/${repo}/${safe_branch}"
 UNIT="ss14-${safe_branch}.service"
 
-ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "sudo mkdir -p '${DEST}/logs' && sudo chown -R ${SSH_USER}:${SSH_USER} '${DEST}'"
+ssh $SSH_OPTS "$HOST" "sudo mkdir -p '${DEST}/logs' && sudo chown -R ${SSH_USER}:${SSH_USER} '${DEST}'"
 
 # firewall
-if ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "command -v ufw >/dev/null 2>&1"; then
-  ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "sudo ufw allow ${PORT}/tcp || true; sudo ufw allow ${PORT}/udp || true"
-elif ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "command -v firewall-cmd >/dev/null 2>&1"; then
-  ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "sudo firewall-cmd --permanent --add-port=${PORT}/tcp || true; sudo firewall-cmd --permanent --add-port=${PORT}/udp || true; sudo firewall-cmd --reload || true"
+if ssh $SSH_OPTS "$HOST" "command -v ufw >/dev/null 2>&1"; then
+  ssh $SSH_OPTS "$HOST" "sudo ufw allow ${PORT}/tcp || true; sudo ufw allow ${PORT}/udp || true"
+elif ssh $SSH_OPTS "$HOST" "command -v firewall-cmd >/dev/null 2>&1"; then
+  ssh $SSH_OPTS "$HOST" "sudo firewall-cmd --permanent --add-port=${PORT}/tcp || true; sudo firewall-cmd --permanent --add-port=${PORT}/udp || true; sudo firewall-cmd --reload || true"
 else
-  ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "sudo iptables -I INPUT -p tcp --dport ${PORT} -j ACCEPT || true; sudo iptables -I INPUT -p udp --dport ${PORT} -j ACCEPT || true"
+  ssh $SSH_OPTS "$HOST" "sudo iptables -I INPUT -p tcp --dport ${PORT} -j ACCEPT || true; sudo iptables -I INPUT -p udp --dport ${PORT} -j ACCEPT || true"
 fi
 
   # upload binaries
-  rsync -a --delete --exclude 'server_config.toml' --exclude 'data/' -e "ssh $SSH_OPTS" artifact/ "${SSH_USER}@${SERVER_IP}:${DEST}/"
+  rsync -a --delete --exclude 'server_config.toml' --exclude 'data/' -e "ssh $SSH_OPTS" artifact/ "$HOST:${DEST}/"
 
   # upload server_config
   if [ -n "$CONFIG_REPO" ]; then
     rm -rf cfgrepo
     git clone --depth 1 "$CONFIG_REPO" cfgrepo
-    scp $SSH_OPTS "cfgrepo/$CONFIG_PATH" "${SSH_USER}@${SERVER_IP}:${DEST}/server_config.toml"
+    scp $SSH_OPTS "cfgrepo/$CONFIG_PATH" "$HOST:${DEST}/server_config.toml"
   else
-    scp $SSH_OPTS configs/server_config.toml "${SSH_USER}@${SERVER_IP}:${DEST}/server_config.toml"
+    scp $SSH_OPTS configs/server_config.toml "$HOST:${DEST}/server_config.toml"
   fi
 
   # systemd unit
@@ -205,11 +215,11 @@ Environment=ROBUST_NUMERICS_AVX=true
 WantedBy=multi-user.target
 EOF
 
-scp $SSH_OPTS "$unit_local" "${SSH_USER}@${SERVER_IP}:/tmp/${UNIT}"
-ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "sudo mv /tmp/${UNIT} /etc/systemd/system/${UNIT} && sudo systemctl daemon-reload && sudo systemctl enable ${UNIT} || true && sudo systemctl restart ${UNIT}"
+scp $SSH_OPTS "$unit_local" "$HOST:/tmp/${UNIT}"
+ssh $SSH_OPTS "$HOST" "sudo mv /tmp/${UNIT} /etc/systemd/system/${UNIT} && sudo systemctl daemon-reload && sudo systemctl enable ${UNIT} || true && sudo systemctl restart ${UNIT}"
 
 # check
-ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" /bin/bash -lc '
+ssh $SSH_OPTS "$HOST" /bin/bash -lc '
   set -e
   sleep 30
   # вывод подключений
@@ -252,6 +262,7 @@ ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" /bin/bash -lc '
 
 '
 '''
+          }
         }
       }
     }
