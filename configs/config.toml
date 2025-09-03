@@ -1,0 +1,36 @@
+[net]
+tickrate = 30
+port = 1337
+bindto = "0.0.0.0"
+
+[game]
+hostname = "THUNDER - Dev"
+maxplayers = 20
+soft_max_players = 15
+welcomemsg = "Опять работа..."
+auto_pause_empty = true
+lobbyenabled = false
+desc = "В стафф пойдешь? Жми на дискорд снизу"
+maxcharacterslots = 1
+role_timers = false
+
+[hub]
+advertise = true
+server_url = "ss14://ss-14.ru:1337"
+hub_urls = "https://hub.spacestation14.com/"
+tags = "lang:ru,region:eu_e,LRP"
+
+[console]
+loginlocal = true
+login_host_user = "Ren0san"
+
+[database]
+engine = "postgres"
+pg_host = "localhost"
+pg_port = 5432
+pg_database = "thunder"
+pg_username = "thunder"
+pg_password = "thunder159753"
+
+[replay]
+auto_record_name = "{year}_{month}_{day}-{hour}_{minute}-round_thunder_{round}.zip"
