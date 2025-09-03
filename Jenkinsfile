@@ -120,11 +120,11 @@ tar -C artifact -czf "ss14-server-${BRANCH}.tar.gz" .
 set -Eeuo pipefail
 SSH_OPTS="-o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=120 -i \"$SSH_KEY\""
 
-if ssh $SSH_OPTS "${SSH_USER}@${SSH_CRED}" "dotnet --list-runtimes 2>/dev/null | grep -q '^Microsoft.NETCore.App 9\\.'"; then
+if ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "dotnet --list-runtimes 2>/dev/null | grep -q '^Microsoft.NETCore.App 9\\.'"; then
   echo "dotnet 9 runtime: OK"
 else
   echo "dotnet 9 runtime: INSTALL"
-  ssh $SSH_OPTS "${SSH_USER}@${SSH_CRED}" /bin/bash -lc '
+  ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" /bin/bash -lc '
     set -Eeuo pipefail
     if ! dpkg -s packages-microsoft-prod >/dev/null 2>&1; then
       . /etc/os-release
@@ -137,7 +137,7 @@ else
     sudo apt-get update -y
     sudo apt-get install -y dotnet-runtime-9.0
   '
-  ssh $SSH_OPTS "${SSH_USER}@${SSH_CRED}" "dotnet --list-runtimes | grep -q '^Microsoft.NETCore.App 9\\.'"
+  ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "dotnet --list-runtimes | grep -q '^Microsoft.NETCore.App 9\\.'"
   echo "dotnet 9 runtime: INSTALLED"
 fi
 '''
@@ -158,27 +158,27 @@ safe_branch="$(printf '%s' "${BRANCH}" | tr '/ ' '_' | tr -cd 'A-Za-z0-9._-')"
 DEST="/opt/${owner}/${repo}/${safe_branch}"
 UNIT="ss14-${safe_branch}.service"
 
-ssh $SSH_OPTS "${SSH_USER}@${SSH_CRED}" "sudo mkdir -p '${DEST}/logs' && sudo chown -R ${SSH_USER}:${SSH_USER} '${DEST}'"
+ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "sudo mkdir -p '${DEST}/logs' && sudo chown -R ${SSH_USER}:${SSH_USER} '${DEST}'"
 
 # firewall
-if ssh $SSH_OPTS "${SSH_USER}@${SSH_CRED}" "command -v ufw >/dev/null 2>&1"; then
-  ssh $SSH_OPTS "${SSH_USER}@${SSH_CRED}" "sudo ufw allow ${PORT}/tcp || true; sudo ufw allow ${PORT}/udp || true"
-elif ssh $SSH_OPTS "${SSH_USER}@${SSH_CRED}" "command -v firewall-cmd >/dev/null 2>&1"; then
-  ssh $SSH_OPTS "${SSH_USER}@${SSH_CRED}" "sudo firewall-cmd --permanent --add-port=${PORT}/tcp || true; sudo firewall-cmd --permanent --add-port=${PORT}/udp || true; sudo firewall-cmd --reload || true"
+if ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "command -v ufw >/dev/null 2>&1"; then
+  ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "sudo ufw allow ${PORT}/tcp || true; sudo ufw allow ${PORT}/udp || true"
+elif ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "command -v firewall-cmd >/dev/null 2>&1"; then
+  ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "sudo firewall-cmd --permanent --add-port=${PORT}/tcp || true; sudo firewall-cmd --permanent --add-port=${PORT}/udp || true; sudo firewall-cmd --reload || true"
 else
-  ssh $SSH_OPTS "${SSH_USER}@${SSH_CRED}" "sudo iptables -I INPUT -p tcp --dport ${PORT} -j ACCEPT || true; sudo iptables -I INPUT -p udp --dport ${PORT} -j ACCEPT || true"
+  ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "sudo iptables -I INPUT -p tcp --dport ${PORT} -j ACCEPT || true; sudo iptables -I INPUT -p udp --dport ${PORT} -j ACCEPT || true"
 fi
 
   # upload binaries
-  rsync -a --delete --exclude 'server_config.toml' --exclude 'data/' -e "ssh $SSH_OPTS" artifact/ "${SSH_USER}@${SSH_CRED}:${DEST}/"
+  rsync -a --delete --exclude 'server_config.toml' --exclude 'data/' -e "ssh $SSH_OPTS" artifact/ "${SSH_USER}@${SERVER_IP}:${DEST}/"
 
   # upload server_config
   if [ -n "$CONFIG_REPO" ]; then
     rm -rf cfgrepo
     git clone --depth 1 "$CONFIG_REPO" cfgrepo
-    scp $SSH_OPTS "cfgrepo/$CONFIG_PATH" "${SSH_USER}@${SSH_CRED}:${DEST}/server_config.toml"
+    scp $SSH_OPTS "cfgrepo/$CONFIG_PATH" "${SSH_USER}@${SERVER_IP}:${DEST}/server_config.toml"
   else
-    scp $SSH_OPTS configs/server_config.toml "${SSH_USER}@${SSH_CRED}:${DEST}/server_config.toml"
+    scp $SSH_OPTS configs/server_config.toml "${SSH_USER}@${SERVER_IP}:${DEST}/server_config.toml"
   fi
 
   # systemd unit
@@ -205,15 +205,15 @@ Environment=ROBUST_NUMERICS_AVX=true
 WantedBy=multi-user.target
 EOF
 
-scp $SSH_OPTS "$unit_local" "${SSH_USER}@${SSH_CRED}:/tmp/${UNIT}"
-ssh $SSH_OPTS "${SSH_USER}@${SSH_CRED}" "sudo mv /tmp/${UNIT} /etc/systemd/system/${UNIT} && sudo systemctl daemon-reload && sudo systemctl enable ${UNIT} || true && sudo systemctl restart ${UNIT}"
+scp $SSH_OPTS "$unit_local" "${SSH_USER}@${SERVER_IP}:/tmp/${UNIT}"
+ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" "sudo mv /tmp/${UNIT} /etc/systemd/system/${UNIT} && sudo systemctl daemon-reload && sudo systemctl enable ${UNIT} || true && sudo systemctl restart ${UNIT}"
 
 # check
-ssh $SSH_OPTS "${SSH_USER}@${SSH_CRED}" /bin/bash -lc '
+ssh $SSH_OPTS "${SSH_USER}@${SERVER_IP}" /bin/bash -lc '
   set -e
   sleep 30
   # вывод подключений
-  echo "connect_ip: ss14://'"${SSH_CRED}"':'"${PORT}"'"
+  echo "connect_ip: ss14://'"${SERVER_IP}"':'"${PORT}"'"
 
   # дать серверу ожить
 
@@ -244,7 +244,7 @@ ssh $SSH_OPTS "${SSH_USER}@${SSH_CRED}" /bin/bash -lc '
   [ -n "$BUILD_OUT" ] && echo "build: ${BUILD_OUT}"
   [ -n "$ACZ_OUT" ] && echo "acz: ${ACZ_OUT}"
 
-  echo "connect_ip: ss14://'"${SSH_CRED}"':'"${PORT}"'"
+  echo "connect_ip: ss14://'"${SERVER_IP}"':'"${PORT}"'"
 
   echo "--- server_config.toml (masked) ---"
   sed "s/^[[:space:]]*pg_password[[:space:]]*=.*/pg_password = \"***\"/" '"${DEST}"'/server_config.toml || true
